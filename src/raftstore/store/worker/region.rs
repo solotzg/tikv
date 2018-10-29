@@ -14,12 +14,17 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::{self, Display, Formatter};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::u64;
 
-use kvproto::raft_serverpb::{PeerState, RaftApplyState, RegionLocalState};
+use futures::sync::mpsc as futures_mpsc;
+use futures::{Future, Sink, Stream};
+use grpc::WriteFlags;
+use kvproto::enginepb::{SnapshotData, SnapshotRequest, SnapshotState};
+use kvproto::enginepb_grpc::EngineClient;
+use kvproto::raft_serverpb::{KeyValue, PeerState, RaftApplyState, RegionLocalState};
 use raft::eraftpb::Snapshot as RaftSnapshot;
 use rocksdb::{Writable, WriteBatch};
 
@@ -31,9 +36,10 @@ use raftstore::store::peer_storage::{
 use raftstore::store::snap::{plain_file_used, Error, Result, SNAPSHOT_CFS};
 use raftstore::store::util::Engines;
 use raftstore::store::{
-    self, check_abort, keys, ApplyOptions, Peekable, SnapEntry, SnapKey, SnapManager,
+    self, check_abort, keys, ApplyOptions, Peekable, RegionSnapshot, SnapEntry, SnapKey,
+    SnapManager,
 };
-use storage::CF_RAFT;
+use storage::{CF_RAFT, DATA_CFS};
 use util::rocksdb::get_cf_num_files_at_level;
 use util::threadpool::{DefaultContext, ThreadPool, ThreadPoolBuilder};
 use util::time;
@@ -211,6 +217,7 @@ impl PendingDeleteRanges {
 #[derive(Clone)]
 struct SnapContext {
     engines: Engines,
+    engine_client: Arc<EngineClient>,
     batch_size: usize,
     mgr: SnapManager,
     use_delete_range: bool,
@@ -322,6 +329,89 @@ impl SnapContext {
             write_batch_size: self.batch_size,
         };
         s.apply(options)?;
+
+        // TODO: Use SstFileReader.
+
+        // SnapshotChunk
+        let (chunk_sender, chunk_steam) = futures_mpsc::unbounded();
+        let (chunk_sink, response) = box_try!(self.engine_client.apply_snapshot());
+        let chunks_fut = chunk_sink
+            .sink_map_err(move |e| {
+                panic!("[region {}] {:?}", region_id, e);
+            })
+            .send_all(
+                chunk_steam
+                    .map(|chunk| (chunk, WriteFlags::default()))
+                    .map_err(move |e| {
+                        panic!("[region {}] {:?}", region_id, e);
+                    }),
+            )
+            .map(|_| ())
+            .map_err(|_| ());
+        self.engine_client.spawn(chunks_fut);
+
+        // SnapshotDone
+        let (sync_sender, done) = mpsc::sync_channel(1);
+        let response_fut = response.then(move |res| {
+            sync_sender.send(res).unwrap();
+            Ok(())
+        });
+        self.engine_client.spawn(response_fut);
+
+        let region_snapshot = RegionSnapshot::from_raw(self.engines.kv.clone(), region.clone());
+
+        // Send snapshot state.
+        let mut state = SnapshotState::new();
+        state.set_apply_state(apply_state.clone());
+        state.set_region(region.clone());
+        let mut req = SnapshotRequest::new();
+        req.set_state(state);
+        chunk_sender.unbounded_send(req).unwrap();
+
+        // Send snapshot data.
+        const BATCH_SIZE: usize = 100;
+        let mut kv_batch = Vec::with_capacity(BATCH_SIZE);
+        for cf in DATA_CFS {
+            region_snapshot
+                .scan_cf(cf, &start_key, &end_key, false, |key, value| {
+                    if kv_batch.len() == BATCH_SIZE {
+                        let mut batch = Vec::with_capacity(BATCH_SIZE);
+                        ::std::mem::swap(&mut kv_batch, &mut batch);
+                        let mut data = SnapshotData::new();
+                        data.set_cf(cf.to_string());
+                        // TODO: compute checksum.
+                        data.set_data(batch.into());
+
+                        let mut req = SnapshotRequest::new();
+                        req.set_data(data);
+                        chunk_sender.unbounded_send(req).unwrap();
+                    }
+
+                    let mut pair = KeyValue::new();
+                    pair.set_key(key.to_owned());
+                    pair.set_value(value.to_owned());
+                    kv_batch.push(pair);
+                    Ok(true)
+                })
+                .unwrap();
+
+            if !kv_batch.is_empty() {
+                let mut batch = Vec::with_capacity(BATCH_SIZE);
+                ::std::mem::swap(&mut kv_batch, &mut batch);
+                let mut data = SnapshotData::new();
+                data.set_cf(cf.to_string());
+                // TODO: compute checksum.
+                data.set_data(batch.into());
+
+                let mut req = SnapshotRequest::new();
+                req.set_data(data);
+                chunk_sender.unbounded_send(req).unwrap();
+            }
+        }
+        // Close chunk sender.
+        drop(chunk_sender);
+        // And wait.
+        box_try!(box_try!(done.recv()));
 
         let wb = WriteBatch::new();
         region_state.set_state(PeerState::Normal);
@@ -521,6 +611,7 @@ impl Runner {
                 .thread_count(GENERATE_POOL_SIZE)
                 .build(),
             ctx: SnapContext {
+                engine_client: engines.engine_client(),
                 engines,
                 mgr,
                 batch_size,

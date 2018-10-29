@@ -15,8 +15,10 @@ use std::collections::Bound::Excluded;
 use std::option::Option;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::{fmt, u64};
 
+use kvproto::enginepb_grpc::EngineClient;
 use kvproto::metapb;
 use kvproto::raft_cmdpb::{AdminCmdType, RaftCmdRequest};
 use protobuf::{self, Message};
@@ -905,10 +907,11 @@ pub fn conf_state_from_region(region: &metapb::Region) -> ConfState {
     conf_state
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Engines {
     pub kv: Arc<DB>,
     pub raft: Arc<DB>,
+    engine_client: Arc<Mutex<Option<Arc<EngineClient>>>>,
 }
 
 impl Engines {
@@ -916,7 +919,22 @@ impl Engines {
         Engines {
             kv: kv_engine,
             raft: raft_engine,
+            engine_client: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn set_engine_client(&mut self, client: EngineClient) {
+        *self.engine_client.lock().unwrap() = Some(Arc::new(client));
+    }
+
+    pub fn engine_client(&self) -> Arc<EngineClient> {
+        self.engine_client.lock().unwrap().as_ref().unwrap().clone()
+    }
+}
+
+impl fmt::Debug for Engines {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Engines")
     }
 }
 

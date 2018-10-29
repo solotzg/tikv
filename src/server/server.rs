@@ -17,6 +17,7 @@ use std::sync::{Arc, RwLock};
 
 use grpc::{ChannelBuilder, EnvBuilder, Environment, Server as GrpcServer, ServerBuilder};
 use kvproto::debugpb_grpc::create_debug;
+use kvproto::enginepb_grpc::EngineClient;
 use kvproto::import_sstpb_grpc::create_import_sst;
 use kvproto::tikvpb_grpc::*;
 
@@ -35,6 +36,7 @@ use super::transport::{RaftStoreRouter, ServerTransport};
 use super::{Config, Result};
 
 const MAX_GRPC_RECV_MSG_LEN: i32 = 10 * 1024 * 1024;
+const MAX_GRPC_SEND_MSG_LEN: i32 = 10 * 1024 * 1024;
 
 pub struct Server<T: RaftStoreRouter + 'static, S: StoreAddrResolver + 'static, E: Engine> {
     env: Arc<Environment>,
@@ -61,6 +63,7 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static, E: Engine> Server<T, S,
         raft_router: T,
         resolver: S,
         snap_mgr: SnapManager,
+        // TODO: remove Option.
         debug_engines: Option<Engines>,
         import_service: Option<ImportSSTService<T>>,
     ) -> Result<Self> {
@@ -96,7 +99,19 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static, E: Engine> Server<T, S,
                 .channel_args(channel_args)
                 .register_service(create_tikv(kv_service));
             sb = security_mgr.bind(sb, &ip, addr.port());
-            if let Some(engines) = debug_engines {
+            if let Some(mut engines) = debug_engines {
+                SocketAddr::from_str(&cfg.engine_addr)?;
+                let cb = ChannelBuilder::new(env.clone())
+                    .stream_initial_window_size(cfg.grpc_stream_initial_window_size.0 as i32)
+                    .max_receive_message_len(MAX_GRPC_RECV_MSG_LEN)
+                    .max_send_message_len(MAX_GRPC_SEND_MSG_LEN)
+                    .keepalive_time(cfg.grpc_keepalive_time.0)
+                    .keepalive_timeout(cfg.grpc_keepalive_timeout.0)
+                    .default_compression_algorithm(cfg.grpc_compression_algorithm());
+                let channel = security_mgr.connect(cb, &cfg.engine_addr);
+                let client = EngineClient::new(channel);
+                engines.set_engine_client(client);
+
                 let debug_service = DebugService::new(engines, raft_router.clone());
                 sb = sb.register_service(create_debug(debug_service));
             }
