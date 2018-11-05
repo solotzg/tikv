@@ -19,11 +19,11 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use protobuf::RepeatedField;
-use rocksdb::rocksdb_options::WriteOptions;
-use rocksdb::{Writable, WriteBatch, DB};
-use uuid::Uuid;
-
+use futures::sync::mpsc::UnboundedSender;
+use grpc::WriteFlags;
+use kvproto::enginepb::{
+    CommandRequest, CommandRequestBatch, CommandRequestHeader, CommandResponseBatch,
+};
 use kvproto::import_sstpb::SSTMeta;
 use kvproto::metapb::{Peer as PeerMeta, Region};
 use kvproto::raft_cmdpb::{
@@ -33,7 +33,11 @@ use kvproto::raft_cmdpb::{
 use kvproto::raft_serverpb::{
     MergeState, PeerState, RaftApplyState, RaftTruncatedState, RegionLocalState,
 };
+use protobuf::RepeatedField;
 use raft::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
+use rocksdb::rocksdb_options::WriteOptions;
+use rocksdb::{Writable, WriteBatch, DB};
+use uuid::Uuid;
 
 use import::SSTImporter;
 use raft::NO_LIMIT;
@@ -240,6 +244,7 @@ struct ApplyContextCore<'a> {
     wb: Option<WriteBatch>,
     cbs: MustConsumeVec<ApplyCallback>,
     merged_regions: Vec<u64>,
+    apply_cmds: Vec<CommandRequest>,
     apply_res: Vec<ApplyRes>,
     wb_last_bytes: u64,
     wb_last_keys: u64,
@@ -262,6 +267,7 @@ impl<'a> ApplyContextCore<'a> {
             wb: None,
             cbs: MustConsumeVec::new("callback of apply context"),
             merged_regions: vec![],
+            apply_cmds: vec![],
             apply_res: vec![],
             wb_last_bytes: 0,
             wb_last_keys: 0,
@@ -279,8 +285,9 @@ impl<'a> ApplyContextCore<'a> {
         self
     }
 
-    pub fn apply_res_capacity(mut self, cap: usize) -> ApplyContextCore<'a> {
+    pub fn apply_capacity(mut self, cap: usize) -> ApplyContextCore<'a> {
         self.apply_res = Vec::with_capacity(cap);
+        self.apply_cmds = Vec::with_capacity(cap);
         self
     }
 
@@ -346,6 +353,7 @@ impl<'a> ApplyContextCore<'a> {
     /// Finish applys for the delegate.
     pub fn finish_for(&mut self, delegate: &mut ApplyDelegate, results: Vec<ExecResult>) {
         if !delegate.pending_remove {
+            // TODO: write apply state according to CommandResponses.
             delegate.write_apply_state(self.wb_mut());
         }
         self.commit_opt(delegate, false);
@@ -624,6 +632,7 @@ impl ApplyDelegate {
         if !data.is_empty() {
             let cmd = util::parse_data_at(data, index, &self.tag);
 
+            // TODO: comment it out.
             if should_write_to_engine(&cmd, apply_ctx.wb().count()) {
                 apply_ctx.commit(self);
             }
@@ -631,6 +640,7 @@ impl ApplyDelegate {
             return self.process_raft_cmd(apply_ctx, index, term, cmd);
         }
 
+        // TODO: should we send it to engine server too? It may need sync-log = true.
         // when a peer become leader, it will send an empty entry.
         let mut state = self.apply_state.clone();
         state.set_applied_index(index);
@@ -749,11 +759,13 @@ impl ApplyDelegate {
         // if pending remove, apply should be aborted already.
         assert!(!self.pending_remove);
 
+        let mut success = true;
         ctx.exec_ctx = Some(self.new_ctx(index, term, req));
         ctx.wb_mut().set_save_point();
         let (resp, exec_result) = self.exec_raft_cmd(ctx).unwrap_or_else(|e| {
             // clear dirty values.
             ctx.wb_mut().rollback_to_save_point().unwrap();
+            success = false;
             match e {
                 Error::StaleEpoch(..) => debug!("{} stale epoch err: {:?}", self.tag, e),
                 _ => error!("{} execute raft command err: {:?}", self.tag, e),
@@ -766,6 +778,25 @@ impl ApplyDelegate {
 
         self.apply_state = exec_ctx.apply_state;
         self.applied_index_term = term;
+
+        if success {
+            let mut req = Rc::try_unwrap(exec_ctx.req).unwrap();
+            let mut header = CommandRequestHeader::new();
+            header.set_region_id(self.region.get_id());
+            header.set_sync_log(req.has_admin_request());
+            header.set_index(index);
+            header.set_term(term);
+            let mut cmd = CommandRequest::new();
+            cmd.set_header(header);
+
+            if req.has_admin_request() {
+                cmd.set_admin_request(req.take_admin_request());
+                cmd.set_admin_response(resp.get_admin_response().clone());
+            } else {
+                cmd.set_requests(req.take_requests());
+            }
+            ctx.core.apply_cmds.push(cmd);
+        }
 
         if let Some(ref exec_result) = exec_result {
             match *exec_result {
@@ -1979,6 +2010,7 @@ pub enum Task {
     Registration(Registration),
     Proposals(Vec<RegionProposal>),
     Destroy(Destroy),
+    Applied(CommandResponseBatch),
 }
 
 impl Task {
@@ -1996,6 +2028,10 @@ impl Task {
     pub fn destroy(region_id: u64) -> Task {
         Task::Destroy(Destroy { region_id })
     }
+
+    pub fn applied(resp_batch: CommandResponseBatch) -> Task {
+        Task::Applied(resp_batch)
+    }
 }
 
 impl Display for Task {
@@ -2007,6 +2043,7 @@ impl Display for Task {
                 write!(f, "[region {}] Reg {:?}", r.region.get_id(), r.apply_state)
             }
             Task::Destroy(ref d) => write!(f, "[region {}] destroy", d.region_id),
+            Task::Applied(_) => write!(f, "async applied batch"),
         }
     }
 }
@@ -2042,6 +2079,7 @@ pub enum TaskRes {
 // TODO: use threadpool to do task concurrently
 pub struct Runner {
     engines: Engines,
+    cmds_sender: UnboundedSender<(CommandRequestBatch, WriteFlags)>,
     host: Arc<CoprocessorHost>,
     importer: Arc<SSTImporter>,
     delegates: HashMap<u64, Option<ApplyDelegate>>,
@@ -2057,6 +2095,7 @@ impl Runner {
         notifier: Sender<TaskRes>,
         sync_log: bool,
         use_delete_range: bool,
+        cmds_sender: UnboundedSender<(CommandRequestBatch, WriteFlags)>,
     ) -> Runner {
         let mut delegates =
             HashMap::with_capacity_and_hasher(store.get_peers().len(), Default::default());
@@ -2065,6 +2104,7 @@ impl Runner {
         }
         Runner {
             engines: store.engines(),
+            cmds_sender,
             host: Arc::clone(&store.coprocessor_host),
             importer: Arc::clone(&store.importer),
             delegates,
@@ -2079,7 +2119,7 @@ impl Runner {
         let t = SlowTimer::new();
 
         let mut core = ApplyContextCore::new(self.host.as_ref(), self.importer.as_ref())
-            .apply_res_capacity(applys.len())
+            .apply_capacity(applys.len())
             .use_delete_range(self.use_delete_range)
             .enable_sync_log(self.sync_log);
         for apply in applys {
@@ -2109,11 +2149,24 @@ impl Runner {
             }
         }
 
+        if !core.apply_cmds.is_empty() {
+            let mut reqs = Vec::new();
+            ::std::mem::swap(&mut core.apply_cmds, &mut reqs);
+            let mut batch = CommandRequestBatch::new();
+            batch.set_requests(reqs.into());
+            // TODO: handle errors
+            self.cmds_sender
+                .unbounded_send((batch, WriteFlags::default()))
+                .unwrap();
+        }
+
         // Write to engine
         // raftsotre.sync-log = true means we need prevent data loss when power failure.
         // take raft log gc for example, we write kv WAL first, then write raft WAL,
         // if power failure happen, raft WAL may synced to disk, but kv WAL may not.
         // so we use sync-log flag here.
+        //
+        // TODO: looks like we need to delay write.
         core.write_to_db(&self.engines.kv);
 
         for region_id in core.merged_regions.drain(..) {
@@ -2123,7 +2176,8 @@ impl Runner {
         }
 
         if !core.apply_res.is_empty() {
-            self.notifier.send(TaskRes::Applys(core.apply_res)).unwrap();
+            // TODO: seems we need to delay notify.
+            // self.notifier.send(TaskRes::Applys(core.apply_res)).unwrap();
         }
 
         STORE_APPLY_LOG_HISTOGRAM.observe(duration_to_sec(t.elapsed()) as f64);
@@ -2134,6 +2188,32 @@ impl Runner {
             self.tag,
             core.committed_count
         );
+    }
+
+    fn handle_applied_command_batch(&mut self, mut resp_batch: CommandResponseBatch) {
+        let resps = resp_batch.take_responses().into_vec();
+        if resps.is_empty() {
+            return;
+        }
+        let mut apply_res = Vec::with_capacity(resps.len());
+        for mut resp in resps {
+            let header = resp.take_header();
+            let region_id = header.get_region_id();
+            // TODO: change log level to debug.
+            info!(
+                "[region {}] receive apply command response {:?}",
+                region_id, resp
+            );
+            apply_res.push(ApplyRes {
+                region_id,
+                apply_state: resp.take_apply_state(),
+                exec_res: vec![], // TODO: handle exec_res.
+                metrics: Default::default(),
+                applied_index_term: resp.get_applied_term(),
+                merged: false, // TODO: consider region merge.
+            });
+        }
+        self.notifier.send(TaskRes::Applys(apply_res)).unwrap();
     }
 
     fn handle_proposals(&mut self, proposals: Vec<RegionProposal>) {
@@ -2213,6 +2293,7 @@ impl Runnable<Task> for Runner {
                 APPLY_TASK_WAIT_TIME_HISTOGRAM.observe(elapsed);
                 self.handle_applies(a.vec);
             }
+            Task::Applied(resp_batch) => self.handle_applied_command_batch(resp_batch),
             Task::Proposals(props) => self.handle_proposals(props),
             Task::Registration(s) => self.handle_registration(s),
             Task::Destroy(d) => self.handle_destroy(d),
@@ -2270,6 +2351,7 @@ mod tests {
     ) -> Runner {
         Runner {
             engines,
+            cmds_sender: None,
             host,
             importer,
             delegates: HashMap::default(),

@@ -20,15 +20,16 @@ use std::sync::mpsc::{self, Receiver as StdReceiver};
 use std::sync::Arc;
 use std::time::Instant;
 use std::{thread, u64};
-use time;
 
-use mio::{self, EventLoop, EventLoopConfig, Sender};
-use rocksdb::{CompactionJobInfo, WriteBatch, DB};
-
+use futures::sync::mpsc as futures_mpsc;
+use futures::{Future, Sink, Stream};
 use kvproto::import_sstpb::SSTMeta;
 use kvproto::metapb;
 use kvproto::pdpb::StoreStats;
 use kvproto::raft_serverpb::{PeerState, RaftMessage, RegionLocalState};
+use mio::{self, EventLoop, EventLoopConfig, Sender};
+use rocksdb::{CompactionJobInfo, WriteBatch, DB};
+use time;
 
 use pd::{PdClient, PdRunner, PdTask};
 use raftstore::coprocessor::split_observer::SplitObserver;
@@ -454,8 +455,41 @@ impl<T: Transport, C: PdClient> Store<T, C> {
         );
         box_try!(self.cleanup_sst_worker.start(cleanup_sst_runner));
 
+        let engine_client = self.engines.engine_client();
+        let (cmds_sink, applied_stream) = engine_client.apply_command_batch().unwrap();
+        let (cmds_sender, cmds_stream) = futures_mpsc::unbounded();
+        // Future of CommandRequestBatch
+        engine_client.spawn(
+            cmds_sink
+                .sink_map_err(|e| panic!("{:?}", e))
+                .send_all(cmds_stream.map_err(|e| panic!("{:?}", e)))
+                .map(|_| ())
+                .map_err(|_| ()),
+        );
+
+        // Future of CommandResponseBatch.
+        let apply_scheduler = self.apply_worker.scheduler();
+        engine_client.spawn(
+            applied_stream
+                .for_each(move |resp_batch| {
+                    // TODO: handle errors.
+                    apply_scheduler
+                        .schedule(ApplyTask::applied(resp_batch))
+                        .unwrap();
+                    Ok(())
+                })
+                .map(|_| ())
+                .map_err(|_| ()),
+        );
+
         let (tx, rx) = mpsc::channel();
-        let apply_runner = ApplyRunner::new(self, tx, self.cfg.sync_log, self.cfg.use_delete_range);
+        let apply_runner = ApplyRunner::new(
+            self,
+            tx,
+            self.cfg.sync_log,
+            self.cfg.use_delete_range,
+            cmds_sender,
+        );
         self.apply_res_receiver = Some(rx);
         box_try!(self.apply_worker.start(apply_runner));
 
