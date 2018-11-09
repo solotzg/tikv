@@ -24,6 +24,7 @@ use futures::{Future, Sink, Stream};
 use grpc::WriteFlags;
 use kvproto::enginepb::{SnapshotData, SnapshotRequest, SnapshotState};
 use kvproto::enginepb_grpc::EngineClient;
+use kvproto::metapb;
 use kvproto::raft_serverpb::{KeyValue, PeerState, RaftApplyState, RegionLocalState};
 use raft::eraftpb::Snapshot as RaftSnapshot;
 use rocksdb::{Writable, WriteBatch};
@@ -71,6 +72,7 @@ pub enum Task {
     },
     Apply {
         region_id: u64,
+        peer: metapb::Peer,
         status: Arc<AtomicUsize>,
     },
     /// Destroy data between [start_key, end_key).
@@ -268,7 +270,12 @@ impl SnapContext {
         timer.observe_duration();
     }
 
-    fn apply_snap(&mut self, region_id: u64, abort: Arc<AtomicUsize>) -> Result<()> {
+    fn apply_snap(
+        &mut self,
+        region_id: u64,
+        peer: metapb::Peer,
+        abort: Arc<AtomicUsize>,
+    ) -> Result<()> {
         info!("[region {}] begin apply snap data", region_id);
         fail_point!("region_apply_snap");
         check_abort(&abort)?;
@@ -364,6 +371,7 @@ impl SnapContext {
         let mut state = SnapshotState::new();
         state.set_apply_state(apply_state.clone());
         state.set_region(region.clone());
+        state.set_peer(peer);
         let mut req = SnapshotRequest::new();
         req.set_state(state);
         chunk_sender.unbounded_send(req).unwrap();
@@ -449,13 +457,13 @@ impl SnapContext {
         false
     }
 
-    fn handle_apply(&mut self, region_id: u64, status: Arc<AtomicUsize>) {
+    fn handle_apply(&mut self, region_id: u64, peer: metapb::Peer, status: Arc<AtomicUsize>) {
         status.compare_and_swap(JOB_STATUS_PENDING, JOB_STATUS_RUNNING, Ordering::SeqCst);
         SNAP_COUNTER_VEC.with_label_values(&["apply", "all"]).inc();
         let apply_histogram = SNAP_HISTOGRAM.with_label_values(&["apply"]);
         let timer = apply_histogram.start_coarse_timer();
 
-        match self.apply_snap(region_id, Arc::clone(&status)) {
+        match self.apply_snap(region_id, peer, Arc::clone(&status)) {
             Ok(()) => {
                 status.swap(JOB_STATUS_FINISHED, Ordering::SeqCst);
                 SNAP_COUNTER_VEC
@@ -644,8 +652,13 @@ impl Runner {
             if self.ctx.ingest_maybe_stall() {
                 break;
             }
-            if let Some(Task::Apply { region_id, status }) = self.pending_applies.pop_front() {
-                self.ctx.handle_apply(region_id, status);
+            if let Some(Task::Apply {
+                region_id,
+                peer,
+                status,
+            }) = self.pending_applies.pop_front()
+            {
+                self.ctx.handle_apply(region_id, peer, status);
             }
         }
     }

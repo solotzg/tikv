@@ -255,6 +255,7 @@ impl CacheQueryStats {
 pub struct PeerStorage {
     pub engines: Engines,
 
+    peer: metapb::Peer,
     region: metapb::Region,
     raft_state: RaftLocalState,
     apply_state: RaftApplyState,
@@ -458,6 +459,7 @@ fn init_last_term(
 impl PeerStorage {
     pub fn new(
         engines: Engines,
+        peer: &metapb::Peer,
         region: &metapb::Region,
         region_sched: Scheduler<RegionTask>,
         tag: String,
@@ -479,6 +481,7 @@ impl PeerStorage {
         Ok(PeerStorage {
             engines,
             region: region.clone(),
+            peer: peer.to_owned(),
             raft_state,
             apply_state,
             snap_state: RefCell::new(SnapState::Relax),
@@ -1029,6 +1032,7 @@ impl PeerStorage {
         self.set_snap_state(SnapState::Applying(Arc::clone(&status)));
         let task = RegionTask::Apply {
             region_id: self.get_region_id(),
+            peer: self.peer.clone(),
             status,
         };
         // TODO: gracefully remove region instead.

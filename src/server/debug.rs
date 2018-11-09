@@ -23,7 +23,7 @@ use protobuf::{self, Message, RepeatedField};
 
 use kvproto::debugpb::{self, DB as DBType, *};
 use kvproto::kvrpcpb::{MvccInfo, MvccLock, MvccValue, MvccWrite, Op};
-use kvproto::metapb::Region;
+use kvproto::metapb::{self, Region};
 use kvproto::raft_serverpb::*;
 use raft::eraftpb::Entry;
 use rocksdb::{
@@ -394,9 +394,12 @@ impl Debugger {
                 return Err(Error::Other("last index < applied index".into()));
             }
 
+            let mut peer = metapb::Peer::new();
+            peer.set_id(peer_id);
             let tag = format!("[region {}] {}", region.get_id(), peer_id);
             let peer_storage = box_try!(PeerStorage::new(
                 self.engines.clone(),
+                &peer,
                 region,
                 fake_snap_worker.scheduler(),
                 tag.clone(),

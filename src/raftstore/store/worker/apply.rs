@@ -36,7 +36,7 @@ use kvproto::raft_serverpb::{
 use protobuf::RepeatedField;
 use raft::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
 use rocksdb::rocksdb_options::WriteOptions;
-use rocksdb::{Writable, WriteBatch, DB};
+use rocksdb::{WriteBatch, DB};
 use uuid::Uuid;
 
 use import::SSTImporter;
@@ -317,7 +317,12 @@ impl<'a> ApplyContextCore<'a> {
     /// This call is valid only when it's between a `prepare_for` and `finish_for`.
     pub fn commit(&mut self, delegate: &mut ApplyDelegate) {
         if self.last_applied_index < delegate.apply_state.get_applied_index() {
-            delegate.write_apply_state(self.wb_mut());
+            write_apply_state(
+                &delegate.engines,
+                self.wb_mut(),
+                delegate.id(),
+                &delegate.apply_state,
+            );
         }
         // last_applied_index doesn't need to be updated, set persistent to true will
         // force it call `prepare_for` automatically.
@@ -354,7 +359,12 @@ impl<'a> ApplyContextCore<'a> {
     pub fn finish_for(&mut self, delegate: &mut ApplyDelegate, results: Vec<ExecResult>) {
         if !delegate.pending_remove {
             // TODO: write apply state according to CommandResponses.
-            delegate.write_apply_state(self.wb_mut());
+            write_apply_state(
+                &delegate.engines,
+                self.wb_mut(),
+                delegate.id(),
+                &delegate.apply_state,
+            );
         }
         self.commit_opt(delegate, false);
         self.apply_res.push(ApplyRes {
@@ -406,6 +416,10 @@ impl<'a> ApplyContextCore<'a> {
     #[inline]
     pub fn wb_mut(&mut self) -> &mut WriteBatch {
         self.wb.as_mut().unwrap()
+    }
+
+    fn take_wb(&mut self) -> Option<WriteBatch> {
+        self.wb.take()
     }
 }
 
@@ -498,6 +512,44 @@ fn should_write_to_engine(cmd: &RaftCmdRequest, wb_keys: usize) -> bool {
     false
 }
 
+fn write_apply_state(
+    engines: &Engines,
+    wb: &WriteBatch,
+    region_id: u64,
+    apply_state: &RaftApplyState,
+) {
+    rocksdb::get_cf_handle(&engines.kv, CF_RAFT)
+        .map_err(From::from)
+        .and_then(|handle| wb.put_msg_cf(handle, &keys::apply_state_key(region_id), apply_state))
+        .unwrap_or_else(|e| {
+            panic!(
+                "[region {}] failed to save apply state to write batch, error: {:?}",
+                region_id, e
+            );
+        });
+}
+
+struct PendingExecResult {
+    index: u64,
+    wb: WriteBatch,
+    res: ExecResult,
+}
+
+impl fmt::Debug for PendingExecResult {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("PendingExecResult")
+            .field("index", &self.index)
+            .field("res", &self.res)
+            .finish()
+    }
+}
+
+impl PendingExecResult {
+    fn new(index: u64, wb: WriteBatch, res: ExecResult) -> PendingExecResult {
+        PendingExecResult { index, wb, res }
+    }
+}
+
 #[derive(Debug)]
 pub struct ApplyDelegate {
     // peer_id
@@ -520,6 +572,15 @@ pub struct ApplyDelegate {
     pending_cmds: PendingCmdQueue,
     metrics: ApplyMetrics,
     last_merge_version: u64,
+
+    // Set it to Some, we first pause the deletgate and corresponding peer in
+    // the raftstore, then send a `sync-log` request to engine and waits a
+    // response.
+    // After received a response, we continue the delegate and the peer.
+    pending_apply_execute_result: Option<PendingExecResult>,
+    // Buffer entries when it meets sync-log requests(admin commands..).
+    // We must check and apply pending requests after received responses.
+    pending_apply_entries: Option<VecDeque<Entry>>,
 }
 
 impl ApplyDelegate {
@@ -542,6 +603,9 @@ impl ApplyDelegate {
             pending_cmds: Default::default(),
             metrics: Default::default(),
             last_merge_version: 0,
+
+            pending_apply_entries: Some(VecDeque::new()),
+            pending_apply_execute_result: None,
         }
     }
 
@@ -553,22 +617,41 @@ impl ApplyDelegate {
         self.id
     }
 
+    fn join_then_take_entries(&mut self, entries: Vec<Entry>) -> Option<VecDeque<Entry>> {
+        if self.pending_apply_entries.as_ref().unwrap().len() + entries.len() == 0 {
+            // No entries need to apply.
+            return None;
+        }
+        let mut pending = self.pending_apply_entries.take().unwrap();
+        pending.append(&mut entries.into());
+        Some(pending)
+    }
+
     fn handle_raft_committed_entries(
         &mut self,
         apply_ctx: &mut ApplyContext,
-        committed_entries: Vec<Entry>,
+        mut committed_entries: VecDeque<Entry>,
     ) {
         if committed_entries.is_empty() {
+            // Because of we have check entries outside that it is never empty.
+            unreachable!();
+        }
+        if self.pending_apply_execute_result.is_some() {
+            // We have sent a sync-log request to engine server and does not receive
+            // any response, so we wait.
+            self.pending_apply_entries = Some(committed_entries);
             return;
         }
+
+        // TODO: we should set self.pending_apply_entries to Some() before return.
         apply_ctx.prepare_for(self);
         apply_ctx.committed_count += committed_entries.len();
         // If we send multiple ConfChange commands, only first one will be proposed correctly,
         // others will be saved as a normal entry with no data, so we must re-propose these
         // commands again.
         apply_ctx.committed_count += committed_entries.len();
-        let mut results = vec![];
-        for entry in committed_entries {
+        // let mut results = vec![];
+        while let Some(entry) = committed_entries.pop_front() {
             if self.pending_remove {
                 // This peer is about to be destroyed, skip everything.
                 break;
@@ -584,17 +667,20 @@ impl ApplyDelegate {
                 );
             }
 
-            let res = match entry.get_entry_type() {
+            match entry.get_entry_type() {
                 EntryType::EntryNormal => self.handle_raft_entry_normal(apply_ctx, entry),
                 EntryType::EntryConfChange => self.handle_raft_entry_conf_change(apply_ctx, entry),
-            };
+            }
 
-            if let Some(res) = res {
-                results.push(res);
+            if self.pending_apply_execute_result.is_some() {
+                // It needs to wait engine server to apply sync-log request,
+                break;
             }
         }
+        self.pending_apply_entries = Some(committed_entries);
 
-        apply_ctx.finish_for(self, results);
+        // calling `finish_for` here is meaningless, because it is not finish yet.
+        // apply_ctx.finish_for(self, results);
     }
 
     fn update_metrics(&mut self, apply_ctx: &ApplyContextCore) {
@@ -602,29 +688,7 @@ impl ApplyDelegate {
         self.metrics.written_keys += apply_ctx.delta_keys();
     }
 
-    fn write_apply_state(&self, wb: &WriteBatch) {
-        rocksdb::get_cf_handle(&self.engines.kv, CF_RAFT)
-            .map_err(From::from)
-            .and_then(|handle| {
-                wb.put_msg_cf(
-                    handle,
-                    &keys::apply_state_key(self.region.get_id()),
-                    &self.apply_state,
-                )
-            })
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{} failed to save apply state to write batch, error: {:?}",
-                    self.tag, e
-                );
-            });
-    }
-
-    fn handle_raft_entry_normal(
-        &mut self,
-        apply_ctx: &mut ApplyContext,
-        entry: Entry,
-    ) -> Option<ExecResult> {
+    fn handle_raft_entry_normal(&mut self, apply_ctx: &mut ApplyContext, entry: Entry) {
         let index = entry.get_index();
         let term = entry.get_term();
         let data = entry.get_data();
@@ -632,12 +696,15 @@ impl ApplyDelegate {
         if !data.is_empty() {
             let cmd = util::parse_data_at(data, index, &self.tag);
 
-            // TODO: comment it out.
-            if should_write_to_engine(&cmd, apply_ctx.wb().count()) {
-                apply_ctx.commit(self);
-            }
+            // TODO: uncomment it, maybe we need send an extra request
+            //       ask engine server to persist its apply results.
+            //
+            // if should_write_to_engine(&cmd, apply_ctx.wb().count()) {
+            //     apply_ctx.commit(self);
+            // }
 
-            return self.process_raft_cmd(apply_ctx, index, term, cmd);
+            self.process_raft_cmd(apply_ctx, index, term, cmd);
+            return;
         }
 
         // TODO: should we send it to engine server too? It may need sync-log = true.
@@ -655,38 +722,51 @@ impl ApplyDelegate {
                 .unwrap()
                 .push(cmd.cb.take(), cmd_resp::err_resp(Error::StaleCommand, term));
         }
-        None
     }
 
-    fn handle_raft_entry_conf_change(
-        &mut self,
-        apply_ctx: &mut ApplyContext,
-        entry: Entry,
-    ) -> Option<ExecResult> {
+    fn handle_raft_entry_conf_change(&mut self, apply_ctx: &mut ApplyContext, entry: Entry) {
         let index = entry.get_index();
         let term = entry.get_term();
         let conf_change: ConfChange = util::parse_data_at(entry.get_data(), index, &self.tag);
         let cmd = util::parse_data_at(conf_change.get_context(), index, &self.tag);
-        Some(
-            self.process_raft_cmd(apply_ctx, index, term, cmd)
-                .map_or_else(
-                    || {
-                        // If failed, tell raft that the config change was aborted.
-                        ExecResult::ChangePeer(Default::default())
-                    },
-                    |mut res| {
-                        if let ExecResult::ChangePeer(ref mut cp) = res {
-                            cp.conf_change = conf_change;
-                        } else {
-                            panic!(
-                                "{} unexpected result {:?} for conf change {:?} at {}",
-                                self.tag, res, conf_change, index
-                            );
-                        }
-                        res
-                    },
-                ),
-        )
+
+        assert!(self.pending_apply_execute_result.is_none());
+        self.process_raft_cmd(apply_ctx, index, term, cmd);
+        if self.pending_apply_execute_result.is_some() {
+            if let Some(ref mut pending) = self.pending_apply_execute_result {
+                if let ExecResult::ChangePeer(ref mut cp) = pending.res {
+                    cp.conf_change = conf_change;
+                } else {
+                    panic!(
+                        "{} unexpected result {:?} for conf change {:?} at {}",
+                        self.tag, pending, conf_change, index
+                    );
+                }
+            } else {
+                panic!(
+                    "{} unexpected result {:?} for conf change {:?} at {}",
+                    self.tag, self.pending_apply_execute_result, conf_change, index
+                );
+            }
+        } else {
+            // If failed, tell raft that the config change was aborted.
+            self.pending_apply_execute_result = Some(PendingExecResult::new(
+                index,
+                WriteBatch::new(),
+                ExecResult::ChangePeer(Default::default()),
+            ));
+
+            // It also requires sync engine.
+            // An empty request with sync log.
+            let mut header = CommandRequestHeader::new();
+            header.set_region_id(self.region.get_id());
+            header.set_sync_log(true);
+            header.set_index(index);
+            header.set_term(term);
+            let mut cmd = CommandRequest::new();
+            cmd.set_header(header);
+            apply_ctx.core.apply_cmds.push(cmd);
+        }
     }
 
     fn find_cb(&mut self, index: u64, term: u64, cmd: &RaftCmdRequest) -> Option<Callback> {
@@ -717,7 +797,7 @@ impl ApplyDelegate {
         index: u64,
         term: u64,
         cmd: RaftCmdRequest,
-    ) -> Option<ExecResult> {
+    ) {
         if index == 0 {
             panic!(
                 "{} processing raft command needs a none zero index",
@@ -731,7 +811,7 @@ impl ApplyDelegate {
 
         let cmd_cb = self.find_cb(index, term, &cmd);
         apply_ctx.host.pre_apply(&self.region, &cmd);
-        let (mut resp, exec_result) = self.apply_raft_cmd(apply_ctx, index, term, cmd);
+        let mut resp = self.apply_raft_cmd(apply_ctx, index, term, cmd);
 
         debug!("{} applied command at log index {}", self.tag, index);
 
@@ -739,8 +819,6 @@ impl ApplyDelegate {
         // store will call it after handing exec result.
         cmd_resp::bind_term(&mut resp, self.term);
         apply_ctx.cbs.last_mut().unwrap().push(cmd_cb, resp);
-
-        exec_result
     }
 
     // apply operation can fail as following situation:
@@ -755,7 +833,7 @@ impl ApplyDelegate {
         index: u64,
         term: u64,
         req: RaftCmdRequest,
-    ) -> (RaftCmdResponse, Option<ExecResult>) {
+    ) -> RaftCmdResponse {
         // if pending remove, apply should be aborted already.
         assert!(!self.pending_remove);
 
@@ -779,27 +857,25 @@ impl ApplyDelegate {
         self.apply_state = exec_ctx.apply_state;
         self.applied_index_term = term;
 
-        if success {
-            let mut req = Rc::try_unwrap(exec_ctx.req).unwrap();
-            let mut header = CommandRequestHeader::new();
-            header.set_region_id(self.region.get_id());
-            header.set_sync_log(req.has_admin_request());
-            header.set_index(index);
-            header.set_term(term);
-            let mut cmd = CommandRequest::new();
-            cmd.set_header(header);
+        let mut req = Rc::try_unwrap(exec_ctx.req).unwrap();
+        let mut header = CommandRequestHeader::new();
+        header.set_region_id(self.region.get_id());
+        header.set_sync_log(exec_result.is_some());
+        header.set_index(index);
+        header.set_term(term);
+        let mut cmd = CommandRequest::new();
+        cmd.set_header(header);
 
-            if req.has_admin_request() {
-                cmd.set_admin_request(req.take_admin_request());
-                cmd.set_admin_response(resp.get_admin_response().clone());
-            } else {
-                cmd.set_requests(req.take_requests());
-            }
-            ctx.core.apply_cmds.push(cmd);
+        if req.has_admin_request() {
+            cmd.set_admin_request(req.take_admin_request());
+            cmd.set_admin_response(resp.get_admin_response().clone());
+        } else {
+            cmd.set_requests(req.take_requests());
         }
 
-        if let Some(ref exec_result) = exec_result {
-            match *exec_result {
+        // TODO: should we apply these changes to delegate after engine persists?
+        if let Some(exec_result) = exec_result {
+            match exec_result {
                 ExecResult::ChangePeer(ref cp) => {
                     self.region = cp.region.clone();
                 }
@@ -830,9 +906,24 @@ impl ApplyDelegate {
                     self.is_merging = false;
                 }
             }
+
+            assert!(success);
+            info!(
+                "{} set pending_apply_execute_result at index {}",
+                self.tag, index
+            );
+            self.pending_apply_execute_result = Some(PendingExecResult::new(
+                index,
+                ctx.take_wb().unwrap(),
+                exec_result,
+            ));
         }
 
-        (resp, exec_result)
+        if success {
+            ctx.core.apply_cmds.push(cmd);
+        }
+
+        resp
     }
 
     /// Clear all the pending commands.
@@ -942,11 +1033,14 @@ impl ApplyDelegate {
             AdminCmdType::ChangePeer => self.exec_change_peer(ctx, request),
             AdminCmdType::Split => self.exec_split(ctx, request),
             AdminCmdType::BatchSplit => self.exec_batch_split(ctx, request),
+            // TODO: how to handle compact log? Should we send compact log to engine server?
             AdminCmdType::CompactLog => self.exec_compact_log(ctx, request),
             AdminCmdType::TransferLeader => Err(box_err!("transfer leader won't exec")),
             AdminCmdType::ComputeHash => self.exec_compute_hash(ctx, request),
             AdminCmdType::VerifyHash => self.exec_verify_hash(ctx, request),
             // TODO: is it backward compatible to add new cmd_type?
+
+            // TODO: consider region merge.
             AdminCmdType::PrepareMerge => self.exec_prepare_merge(ctx, request),
             AdminCmdType::CommitMerge => self.exec_commit_merge(ctx, request),
             AdminCmdType::RollbackMerge => self.exec_rollback_merge(ctx, request),
@@ -1402,7 +1496,7 @@ impl ApplyDelegate {
                 )
             }),
         };
-        delegate.handle_raft_committed_entries(ctx, entries);
+        delegate.handle_raft_committed_entries(ctx, entries.into());
         *exist_region = delegate.region.clone();
         *ctx.delegates.get_mut(&region_id).unwrap() = Some(delegate);
         ctx.apply_res.last_mut().unwrap().merged = true;
@@ -1606,7 +1700,7 @@ impl ApplyDelegate {
 
     fn exec_write_cmd(
         &mut self,
-        ctx: &ApplyContext,
+        ctx: &mut ApplyContext,
         requests: &[Request],
     ) -> Result<(RaftCmdResponse, Option<ExecResult>)> {
         let mut responses = Vec::with_capacity(requests.len());
@@ -1621,7 +1715,10 @@ impl ApplyDelegate {
                 CmdType::DeleteRange => {
                     self.handle_delete_range(req, &mut ranges, ctx.use_delete_range)
                 }
-                CmdType::IngestSST => self.handle_ingest_sst(ctx, req, &mut ssts),
+                CmdType::IngestSST => {
+                    self.handle_ingest_sst(ctx, req, &mut ssts);
+                    panic!("CmdType::IngestSST is not supported");
+                }
                 // Readonly commands are handled in raftstore directly.
                 // Don't panic here in case there are old entries need to be applied.
                 // It's also safe to skip them here, because a restart must have happened,
@@ -1664,81 +1761,83 @@ impl ApplyDelegate {
         Ok((resp, exec_res))
     }
 
-    fn handle_put(&mut self, ctx: &ApplyContext, req: &Request) -> Result<Response> {
-        let (key, value) = (req.get_put().get_key(), req.get_put().get_value());
+    fn handle_put(&mut self, _: &ApplyContext, req: &Request) -> Result<Response> {
+        let key = req.get_put().get_key();
         // region key range has no data prefix, so we must use origin key to check.
         util::check_key_in_region(key, &self.region)?;
 
-        let resp = Response::new();
-        let key = keys::data_key(key);
-        self.metrics.size_diff_hint += key.len() as i64;
-        self.metrics.size_diff_hint += value.len() as i64;
-        if !req.get_put().get_cf().is_empty() {
-            let cf = req.get_put().get_cf();
-            // TODO: don't allow write preseved cfs.
-            if cf == CF_LOCK {
-                self.metrics.lock_cf_written_bytes += key.len() as u64;
-                self.metrics.lock_cf_written_bytes += value.len() as u64;
-            }
-            // TODO: check whether cf exists or not.
-            rocksdb::get_cf_handle(&self.engines.kv, cf)
-                .and_then(|handle| ctx.wb().put_cf(handle, &key, value))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "{} failed to write ({}, {}) to cf {}: {:?}",
-                        self.tag,
-                        escape(&key),
-                        escape(value),
-                        cf,
-                        e
-                    )
-                });
-        } else {
-            ctx.wb().put(&key, value).unwrap_or_else(|e| {
-                panic!(
-                    "{} failed to write ({}, {}): {:?}",
-                    self.tag,
-                    escape(&key),
-                    escape(value),
-                    e
-                );
-            });
-        }
-        Ok(resp)
+        Ok(Response::new())
+        // let resp = Response::new();
+        // let key = keys::data_key(key);
+        // self.metrics.size_diff_hint += key.len() as i64;
+        // self.metrics.size_diff_hint += value.len() as i64;
+        // if !req.get_put().get_cf().is_empty() {
+        //     let cf = req.get_put().get_cf();
+        //     // TODO: don't allow write preseved cfs.
+        //     if cf == CF_LOCK {
+        //         self.metrics.lock_cf_written_bytes += key.len() as u64;
+        //         self.metrics.lock_cf_written_bytes += value.len() as u64;
+        //     }
+        //     // TODO: check whether cf exists or not.
+        //     rocksdb::get_cf_handle(&self.engines.kv, cf)
+        //         .and_then(|handle| ctx.wb().put_cf(handle, &key, value))
+        //         .unwrap_or_else(|e| {
+        //             panic!(
+        //                 "{} failed to write ({}, {}) to cf {}: {:?}",
+        //                 self.tag,
+        //                 escape(&key),
+        //                 escape(value),
+        //                 cf,
+        //                 e
+        //             )
+        //         });
+        // } else {
+        //     ctx.wb().put(&key, value).unwrap_or_else(|e| {
+        //         panic!(
+        //             "{} failed to write ({}, {}): {:?}",
+        //             self.tag,
+        //             escape(&key),
+        //             escape(value),
+        //             e
+        //         );
+        //     });
+        // }
+        // Ok(resp)
     }
 
-    fn handle_delete(&mut self, ctx: &ApplyContext, req: &Request) -> Result<Response> {
+    fn handle_delete(&mut self, _: &ApplyContext, req: &Request) -> Result<Response> {
         let key = req.get_delete().get_key();
         // region key range has no data prefix, so we must use origin key to check.
         util::check_key_in_region(key, &self.region)?;
 
-        let key = keys::data_key(key);
-        // since size_diff_hint is not accurate, so we just skip calculate the value size.
-        self.metrics.size_diff_hint -= key.len() as i64;
-        let resp = Response::new();
-        if !req.get_delete().get_cf().is_empty() {
-            let cf = req.get_delete().get_cf();
-            // TODO: check whether cf exists or not.
-            rocksdb::get_cf_handle(&self.engines.kv, cf)
-                .and_then(|handle| ctx.wb().delete_cf(handle, &key))
-                .unwrap_or_else(|e| {
-                    panic!("{} failed to delete {}: {:?}", self.tag, escape(&key), e)
-                });
+        Ok(Response::new())
+        // let key = keys::data_key(key);
+        // // since size_diff_hint is not accurate, so we just skip calculate the value size.
+        // self.metrics.size_diff_hint -= key.len() as i64;
+        // let resp = Response::new();
+        // if !req.get_delete().get_cf().is_empty() {
+        //     let cf = req.get_delete().get_cf();
+        //     // TODO: check whether cf exists or not.
+        //     rocksdb::get_cf_handle(&self.engines.kv, cf)
+        //         .and_then(|handle| ctx.wb().delete_cf(handle, &key))
+        //         .unwrap_or_else(|e| {
+        //             panic!("{} failed to delete {}: {:?}", self.tag, escape(&key), e)
+        //         });
 
-            if cf == CF_LOCK {
-                // delete is a kind of write for RocksDB.
-                self.metrics.lock_cf_written_bytes += key.len() as u64;
-            } else {
-                self.metrics.delete_keys_hint += 1;
-            }
-        } else {
-            ctx.wb().delete(&key).unwrap_or_else(|e| {
-                panic!("{} failed to delete {}: {:?}", self.tag, escape(&key), e)
-            });
-            self.metrics.delete_keys_hint += 1;
-        }
+        //     if cf == CF_LOCK {
+        //         // delete is a kind of write for RocksDB.
+        //         self.metrics.lock_cf_written_bytes += key.len() as u64;
+        //     } else {
+        //         self.metrics.delete_keys_hint += 1;
+        //     }
+        // } else {
+        //     ctx.wb().delete(&key).unwrap_or_else(|e| {
+        //         panic!("{} failed to delete {}: {:?}", self.tag, escape(&key), e)
+        //     });
+        //     self.metrics.delete_keys_hint += 1;
+        // }
 
-        Ok(resp)
+        // Ok(resp)
     }
 
     fn handle_delete_range(
@@ -2123,9 +2222,10 @@ impl Runner {
             .use_delete_range(self.use_delete_range)
             .enable_sync_log(self.sync_log);
         for apply in applys {
-            if apply.entries.is_empty() || core.merged_regions.contains(&apply.region_id) {
+            if core.merged_regions.contains(&apply.region_id) {
                 continue;
             }
+
             let mut delegate = match self.delegates.get_mut(&apply.region_id) {
                 None => {
                     error!("[region {}] is missing", apply.region_id);
@@ -2133,20 +2233,17 @@ impl Runner {
                 }
                 Some(e) => e.take().unwrap(),
             };
-            delegate.metrics = ApplyMetrics::default();
-            delegate.term = apply.term;
 
-            {
+            if let Some(entries) = delegate.join_then_take_entries(apply.entries) {
+                // We get some entries to apply.
+                delegate.metrics = ApplyMetrics::default();
+                delegate.term = apply.term;
+
                 let mut ctx = ApplyContext::new(&mut core, &mut self.delegates);
-                delegate.handle_raft_committed_entries(&mut ctx, apply.entries);
+                delegate.handle_raft_committed_entries(&mut ctx, entries);
             }
 
-            if delegate.pending_remove {
-                delegate.destroy();
-                self.delegates.remove(&apply.region_id);
-            } else {
-                *self.delegates.get_mut(&apply.region_id).unwrap() = Some(delegate);
-            }
+            *self.delegates.get_mut(&apply.region_id).unwrap() = Some(delegate);
         }
 
         if !core.apply_cmds.is_empty() {
@@ -2166,8 +2263,12 @@ impl Runner {
         // if power failure happen, raft WAL may synced to disk, but kv WAL may not.
         // so we use sync-log flag here.
         //
-        // TODO: looks like we need to delay write.
-        core.write_to_db(&self.engines.kv);
+        // core.write_to_db(&self.engines.kv);
+
+        // TODO: remove it!
+        for cbs in core.cbs.drain(..) {
+            cbs.invoke_all(&self.host);
+        }
 
         for region_id in core.merged_regions.drain(..) {
             if let Some(mut e) = self.delegates.remove(&region_id) {
@@ -2175,10 +2276,7 @@ impl Runner {
             }
         }
 
-        if !core.apply_res.is_empty() {
-            // TODO: seems we need to delay notify.
-            // self.notifier.send(TaskRes::Applys(core.apply_res)).unwrap();
-        }
+        // TODO: pause sending committed entries from raftstore which may cause OOM.
 
         STORE_APPLY_LOG_HISTOGRAM.observe(duration_to_sec(t.elapsed()) as f64);
 
@@ -2199,17 +2297,63 @@ impl Runner {
         for mut resp in resps {
             let header = resp.take_header();
             let region_id = header.get_region_id();
-            // TODO: change log level to debug.
+
             info!(
                 "[region {}] receive apply command response {:?}",
                 region_id, resp
             );
+
+            let apply_state = resp.take_apply_state();
+            let applied_index_term = resp.get_applied_term();
+            let mut delegate = match self.delegates.get_mut(&region_id) {
+                None => {
+                    error!("[region {}] is missing", region_id);
+                    continue;
+                }
+                Some(e) => e.take().unwrap(),
+            };
+
+            let mut exec_res = vec![];
+            // Set it to false, since we have received its responses.
+            if delegate.pending_apply_execute_result.is_some() {
+                if delegate
+                    .pending_apply_execute_result
+                    .as_ref()
+                    .unwrap()
+                    .index <= apply_state.get_applied_index()
+                {
+                    // Engine server has persist apply results.
+                    let mut pending = delegate.pending_apply_execute_result.take().unwrap();
+                    exec_res.push(pending.res);
+
+                    // Persist apply state and region data.
+                    write_apply_state(&self.engines, &mut pending.wb, region_id, &apply_state);
+                    let mut write_opts = WriteOptions::new();
+                    write_opts.set_sync(true);
+                    self.engines
+                        .kv
+                        .write_opt(pending.wb, &write_opts)
+                        .unwrap_or_else(|e| {
+                            panic!("failed to write to engine: {:?}", e);
+                        });
+                }
+            }
+
+            if delegate.pending_apply_execute_result.is_none() && delegate.pending_remove {
+                // If the delegate id pending remove and it has no pending_apply_execute_result
+                // then we can remove the delegate.
+                delegate.destroy();
+                self.delegates.remove(&region_id);
+            } else {
+                *self.delegates.get_mut(&region_id).unwrap() = Some(delegate);
+            }
+
             apply_res.push(ApplyRes {
                 region_id,
-                apply_state: resp.take_apply_state(),
-                exec_res: vec![], // TODO: handle exec_res.
+                apply_state,
+                exec_res,
                 metrics: Default::default(),
-                applied_index_term: resp.get_applied_term(),
+                applied_index_term,
                 merged: false, // TODO: consider region merge.
             });
         }

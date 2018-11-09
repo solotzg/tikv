@@ -461,8 +461,8 @@ impl<T: Transport, C: PdClient> Store<T, C> {
         // Future of CommandRequestBatch
         engine_client.spawn(
             cmds_sink
-                .sink_map_err(|e| panic!("{:?}", e))
-                .send_all(cmds_stream.map_err(|e| panic!("{:?}", e)))
+                .sink_map_err(|e| error!("engine client sink error: {:?}", e))
+                .send_all(cmds_stream.map_err(|e| error!("engine requests stream error: {:?}", e)))
                 .map(|_| ())
                 .map_err(|_| ()),
         );

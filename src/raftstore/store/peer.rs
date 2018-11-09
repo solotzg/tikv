@@ -342,6 +342,7 @@ impl Peer {
 
         let ps = PeerStorage::new(
             store.engines(),
+            &peer,
             region,
             sched,
             tag.clone(),
