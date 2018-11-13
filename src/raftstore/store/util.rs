@@ -15,9 +15,9 @@ use std::collections::Bound::Excluded;
 use std::option::Option;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::{fmt, u64};
 
+use grpc::{ChannelBuilder, Environment};
 use kvproto::enginepb_grpc::EngineClient;
 use kvproto::metapb;
 use kvproto::raft_cmdpb::{AdminCmdType, RaftCmdRequest};
@@ -33,6 +33,7 @@ use storage::{Key, CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE, LARGE_CFS};
 use util::escape;
 use util::properties::RangeProperties;
 use util::rocksdb::stats::get_range_entries_and_versions;
+use util::security::SecurityManager;
 use util::time::monotonic_raw_now;
 use util::{rocksdb as rocksdb_util, Either};
 
@@ -908,10 +909,18 @@ pub fn conf_state_from_region(region: &metapb::Region) -> ConfState {
 }
 
 #[derive(Clone)]
+struct EngineClientConfig {
+    env: Arc<Environment>,
+    security_mgr: Arc<SecurityManager>,
+    engine_addr: String,
+}
+
+#[derive(Clone)]
 pub struct Engines {
     pub kv: Arc<DB>,
     pub raft: Arc<DB>,
-    engine_client: Arc<Mutex<Option<Arc<EngineClient>>>>,
+
+    engine_client_cfg: Option<EngineClientConfig>,
 }
 
 impl Engines {
@@ -919,16 +928,35 @@ impl Engines {
         Engines {
             kv: kv_engine,
             raft: raft_engine,
-            engine_client: Arc::new(Mutex::new(None)),
+            engine_client_cfg: None,
         }
     }
 
-    pub fn set_engine_client(&mut self, client: EngineClient) {
-        *self.engine_client.lock().unwrap() = Some(Arc::new(client));
+    pub fn set_engine_client(
+        &mut self,
+        env: Arc<Environment>,
+        security_mgr: Arc<SecurityManager>,
+        engine_addr: String,
+    ) {
+        self.engine_client_cfg = Some(EngineClientConfig {
+            env,
+            security_mgr,
+            engine_addr,
+        });
     }
 
-    pub fn engine_client(&self) -> Arc<EngineClient> {
-        self.engine_client.lock().unwrap().as_ref().unwrap().clone()
+    pub fn engine_client(&self) -> EngineClient {
+        const MAX_GRPC_RECV_MSG_LEN: i32 = 1024 * 1024 * 1024;
+        const MAX_GRPC_SEND_MSG_LEN: i32 = 1024 * 1024 * 1024;
+        const DEFAULT_GRPC_STREAM_INITIAL_WINDOW_SIZE: i32 = 2 * 1024 * 1024;
+
+        let cfg = self.engine_client_cfg.as_ref().unwrap();
+        let cb = ChannelBuilder::new(cfg.env.clone())
+            .stream_initial_window_size(DEFAULT_GRPC_STREAM_INITIAL_WINDOW_SIZE)
+            .max_receive_message_len(MAX_GRPC_RECV_MSG_LEN)
+            .max_send_message_len(MAX_GRPC_SEND_MSG_LEN);
+        let channel = cfg.security_mgr.connect(cb, &cfg.engine_addr);
+        EngineClient::new(channel)
     }
 }
 

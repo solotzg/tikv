@@ -1143,7 +1143,12 @@ impl Peer {
         apply_metrics: &ApplyMetrics,
     ) {
         if self.is_applying_snapshot() {
-            panic!("{} should not applying snapshot.", self.tag);
+            // Drop apply results, engine server sends stale apply results.
+            info!(
+                "{} drop stale apply results, applied_index_term: {}, {:?}",
+                self.tag, applied_index_term, apply_state,
+            );
+            return;
         }
 
         if !merged {

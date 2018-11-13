@@ -29,7 +29,7 @@ use kvproto::raft_serverpb::{KeyValue, PeerState, RaftApplyState, RegionLocalSta
 use raft::eraftpb::Snapshot as RaftSnapshot;
 use rocksdb::{Writable, WriteBatch};
 
-use raftstore::store::engine::{Mutable, Snapshot};
+use raftstore::store::engine::{Iterable, Mutable, Snapshot};
 use raftstore::store::peer_storage::{
     JOB_STATUS_CANCELLED, JOB_STATUS_CANCELLING, JOB_STATUS_FAILED, JOB_STATUS_FINISHED,
     JOB_STATUS_PENDING, JOB_STATUS_RUNNING,
@@ -37,8 +37,7 @@ use raftstore::store::peer_storage::{
 use raftstore::store::snap::{plain_file_used, Error, Result, SNAPSHOT_CFS};
 use raftstore::store::util::Engines;
 use raftstore::store::{
-    self, check_abort, keys, ApplyOptions, Peekable, RegionSnapshot, SnapEntry, SnapKey,
-    SnapManager,
+    self, check_abort, keys, ApplyOptions, Peekable, SnapEntry, SnapKey, SnapManager,
 };
 use storage::{CF_RAFT, DATA_CFS};
 use util::rocksdb::get_cf_num_files_at_level;
@@ -365,7 +364,8 @@ impl SnapContext {
         });
         self.engine_client.spawn(response_fut);
 
-        let region_snapshot = RegionSnapshot::from_raw(self.engines.kv.clone(), region.clone());
+        // We scan kvs on a raw snapshot.
+        let raw_snapshot = Snapshot::new(self.engines.kv.clone());
 
         // Send snapshot state.
         let mut state = SnapshotState::new();
@@ -380,7 +380,7 @@ impl SnapContext {
         const BATCH_SIZE: usize = 100;
         let mut kv_batch = Vec::with_capacity(BATCH_SIZE);
         for cf in DATA_CFS {
-            region_snapshot
+            raw_snapshot
                 .scan_cf(cf, &start_key, &end_key, false, |key, value| {
                     if kv_batch.len() == BATCH_SIZE {
                         let mut batch = Vec::with_capacity(BATCH_SIZE);
@@ -394,6 +394,9 @@ impl SnapContext {
                         req.set_data(data);
                         chunk_sender.unbounded_send(req).unwrap();
                     }
+
+                    // Converts data key to origin key(raw/encoded).
+                    let key = keys::origin_key(key);
 
                     let mut pair = KeyValue::new();
                     pair.set_key(key.to_owned());
@@ -619,7 +622,7 @@ impl Runner {
                 .thread_count(GENERATE_POOL_SIZE)
                 .build(),
             ctx: SnapContext {
-                engine_client: engines.engine_client(),
+                engine_client: Arc::new(engines.engine_client()),
                 engines,
                 mgr,
                 batch_size,
