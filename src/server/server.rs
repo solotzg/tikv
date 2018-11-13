@@ -55,6 +55,7 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static, E: Engine> Server<T, S,
     #[cfg_attr(feature = "cargo-clippy", allow(too_many_arguments))]
     pub fn new(
         cfg: &Arc<Config>,
+        env: Arc<Environment>,
         security_mgr: &Arc<SecurityManager>,
         storage: Storage<E>,
         cop: Endpoint<E>,
@@ -65,12 +66,6 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static, E: Engine> Server<T, S,
         debug_engines: Option<Engines>,
         import_service: Option<ImportSSTService<T>>,
     ) -> Result<Self> {
-        let env = Arc::new(
-            EnvBuilder::new()
-                .cq_count(cfg.grpc_concurrency)
-                .name_prefix(thd_name!("grpc-server"))
-                .build(),
-        );
         let raft_client = Arc::new(RwLock::new(RaftClient::new(
             Arc::clone(&env),
             Arc::clone(cfg),
@@ -98,13 +93,6 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static, E: Engine> Server<T, S,
                 .register_service(create_tikv(kv_service));
             sb = security_mgr.bind(sb, &ip, addr.port());
             if let Some(mut engines) = debug_engines {
-                SocketAddr::from_str(&cfg.engine_addr)?;
-                engines.set_engine_client(
-                    env.clone(),
-                    security_mgr.clone(),
-                    cfg.engine_addr.clone(),
-                );
-
                 let debug_service = DebugService::new(engines, raft_router.clone());
                 sb = sb.register_service(create_debug(debug_service));
             }

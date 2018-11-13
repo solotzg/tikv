@@ -37,6 +37,7 @@ extern crate slog_stdlog;
 extern crate slog_term;
 #[macro_use]
 extern crate tikv;
+extern crate grpcio as grpc;
 extern crate toml;
 
 #[cfg(unix)]
@@ -46,8 +47,10 @@ use util::setup::*;
 use util::signal_handler;
 
 use std::fs::File;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::process;
+use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -55,6 +58,7 @@ use std::usize;
 
 use clap::{App, Arg};
 use fs2::FileExt;
+use grpc::EnvBuilder;
 
 use tikv::config::{check_and_persist_critical_config, TiKvConfig};
 use tikv::coprocessor;
@@ -170,7 +174,7 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
             raft_db_cf_opts,
         ).unwrap_or_else(|s| fatal!("failed to create raft engine: {:?}", s)),
     );
-    let engines = Engines::new(Arc::clone(&kv_engine), Arc::clone(&raft_engine));
+    let mut engines = Engines::new(Arc::clone(&kv_engine), Arc::clone(&raft_engine));
 
     // Create snapshot manager, server.
     let snap_mgr = SnapManagerBuilder::default()
@@ -196,8 +200,22 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
         move || coprocessor::ReadPoolContext::new(pd_sender.clone())
     });
     let cop = coprocessor::Endpoint::new(&server_cfg, storage.get_engine(), cop_read_pool);
+    let env = Arc::new(
+        EnvBuilder::new()
+            .cq_count(server_cfg.grpc_concurrency)
+            .name_prefix(thd_name!("grpc-server"))
+            .build(),
+    );
+    SocketAddr::from_str(&server_cfg.engine_addr)
+        .unwrap_or_else(|e| fatal!("failed to parser engine server address: {:?}", e));
+    engines.set_engine_client(
+        env.clone(),
+        security_mgr.clone(),
+        server_cfg.engine_addr.clone(),
+    );
     let mut server = Server::new(
         &server_cfg,
+        env,
         &security_mgr,
         storage.clone(),
         cop,
