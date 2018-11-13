@@ -953,8 +953,8 @@ impl Engines {
         let cfg = self.engine_client_cfg.as_ref().unwrap();
         let cb = ChannelBuilder::new(cfg.env.clone())
             .stream_initial_window_size(DEFAULT_GRPC_STREAM_INITIAL_WINDOW_SIZE)
-            .max_receive_message_len(MAX_GRPC_RECV_MSG_LEN)
-            .max_send_message_len(MAX_GRPC_SEND_MSG_LEN);
+            .max_receive_message_len(-1)
+            .max_send_message_len(-1);
         let channel = cfg.security_mgr.connect(cb, &cfg.engine_addr);
         EngineClient::new(channel)
     }

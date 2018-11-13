@@ -1145,8 +1145,15 @@ impl Peer {
         if self.is_applying_snapshot() {
             // Drop apply results, engine server sends stale apply results.
             info!(
-                "{} drop stale apply results, applied_index_term: {}, {:?}",
+                "{} drop stale apply results, applying snapshot, applied_index_term: {}, {:?}",
                 self.tag, applied_index_term, apply_state,
+            );
+            return;
+        }
+        if apply_state.get_applied_index() <= self.raft_group.get_store().applied_index() {
+            info!(
+                "{} drop stale apply results, advanced, applied_index_term: {}, {:?}, current applied index: {:?}",
+                self.tag, applied_index_term, apply_state, self.raft_group.get_store().applied_index()
             );
             return;
         }
