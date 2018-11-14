@@ -2307,7 +2307,10 @@ impl Runner {
             let applied_index_term = resp.get_applied_term();
             let mut delegate = match self.delegates.get_mut(&region_id) {
                 None => {
-                    error!("[region {}] is missing", region_id);
+                    error!(
+                        "[region {}] is missing, drop response {:?}",
+                        region_id, resp
+                    );
                     continue;
                 }
                 Some(e) => e.take().unwrap(),

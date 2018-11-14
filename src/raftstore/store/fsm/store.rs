@@ -473,12 +473,11 @@ impl<T: Transport, C: PdClient> Store<T, C> {
             applied_stream
                 .for_each(move |resp_batch| {
                     // TODO: handle errors.
-                    apply_scheduler
-                        .schedule(ApplyTask::applied(resp_batch))
-                        .unwrap();
+                    if let Err(e) = apply_scheduler.schedule(ApplyTask::applied(resp_batch)) {
+                        error!("fail to schedule engine responses, error {:?}", e);
+                    }
                     Ok(())
                 })
-                .map(|_| ())
                 .map_err(|_| ()),
         );
 
