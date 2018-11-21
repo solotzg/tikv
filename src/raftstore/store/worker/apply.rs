@@ -257,6 +257,8 @@ struct ApplyContextCore<'a> {
     sync_log_hint: bool,
     exec_ctx: Option<ExecContext>,
     use_delete_range: bool,
+
+    command_context: Option<Vec<u8>>,
 }
 
 impl<'a> ApplyContextCore<'a> {
@@ -277,6 +279,7 @@ impl<'a> ApplyContextCore<'a> {
             sync_log_hint: false,
             exec_ctx: None,
             use_delete_range: false,
+            command_context: None,
         }
     }
 
@@ -863,6 +866,9 @@ impl ApplyDelegate {
         header.set_sync_log(exec_result.is_some());
         header.set_index(index);
         header.set_term(term);
+        if let Some(c) = ctx.core.command_context.take() {
+            header.set_context(c);
+        }
         let mut cmd = CommandRequest::new();
         cmd.set_header(header);
 
@@ -1992,9 +1998,24 @@ fn check_sst_for_ingestion(sst: &SSTMeta, region: &Region) -> Result<()> {
 impl ApplyDelegate {
     fn exec_compute_hash(
         &self,
-        ctx: &ApplyContext,
+        ctx: &mut ApplyContext,
         _: &AdminRequest,
     ) -> Result<(AdminResponse, Option<ExecResult>)> {
+        let snap = Snapshot::new(Arc::clone(&self.engines.kv));
+
+        let region_id = self.region_id();
+        let region_state_key = keys::region_state_key(region_id);
+        let raft_apply_state = match snap.get_value_cf(CF_RAFT, &region_state_key) {
+            Err(e) => {
+                error!("[region {}] failed to get region state: {:?}", region_id, e);
+                vec![]
+            }
+            Ok(Some(v)) => v.to_vec(),
+            Ok(None) => vec![],
+        };
+        assert!(ctx.core.command_context.is_none());
+        ctx.core.command_context = Some(raft_apply_state);
+
         let resp = AdminResponse::new();
         Ok((
             resp,
@@ -2005,7 +2026,7 @@ impl ApplyDelegate {
                 // open files in rocksdb.
                 // TODO: figure out another way to do consistency check without snapshot
                 // or short life snapshot.
-                snap: Snapshot::new(Arc::clone(&self.engines.kv)),
+                snap,
             }),
         ))
     }
@@ -2327,7 +2348,14 @@ impl Runner {
                 {
                     // Engine server has persist apply results.
                     let mut pending = delegate.pending_apply_execute_result.take().unwrap();
-                    exec_res.push(pending.res);
+                    match pending.res {
+                        // Drop consistency check results, because we have checked them in
+                        // engine servers.
+                        ExecResult::ComputeHash { .. } | ExecResult::VerifyHash { .. } => {}
+                        other => {
+                            exec_res.push(other);
+                        }
+                    }
 
                     // Persist apply state and region data.
                     write_apply_state(&self.engines, &mut pending.wb, region_id, &apply_state);
