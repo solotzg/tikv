@@ -725,6 +725,17 @@ impl ApplyDelegate {
                 .unwrap()
                 .push(cmd.cb.take(), cmd_resp::err_resp(Error::StaleCommand, term));
         }
+
+        let mut header = CommandRequestHeader::new();
+        header.set_region_id(self.region.get_id());
+        header.set_sync_log(true);
+        header.set_index(index);
+        header.set_term(term);
+        // No need header context.
+        let mut cmd = CommandRequest::new();
+        cmd.set_header(header);
+        // No cmds.
+        apply_ctx.core.apply_cmds.push(cmd);
     }
 
     fn handle_raft_entry_conf_change(&mut self, apply_ctx: &mut ApplyContext, entry: Entry) {
@@ -863,7 +874,7 @@ impl ApplyDelegate {
         let mut req = Rc::try_unwrap(exec_ctx.req).unwrap();
         let mut header = CommandRequestHeader::new();
         header.set_region_id(self.region.get_id());
-        header.set_sync_log(exec_result.is_some());
+        header.set_sync_log(exec_result.is_some() || req.has_admin_request());
         header.set_index(index);
         header.set_term(term);
         if let Some(c) = ctx.core.command_context.take() {
@@ -2337,6 +2348,7 @@ impl Runner {
                 Some(e) => e.take().unwrap(),
             };
 
+            let mut wb = WriteBatch::new();
             let mut exec_res = vec![];
             // Set it to false, since we have received its responses.
             if delegate.pending_apply_execute_result.is_some() {
@@ -2356,19 +2368,21 @@ impl Runner {
                             exec_res.push(other);
                         }
                     }
-
-                    // Persist apply state and region data.
-                    write_apply_state(&self.engines, &mut pending.wb, region_id, &apply_state);
-                    let mut write_opts = WriteOptions::new();
-                    write_opts.set_sync(true);
-                    self.engines
-                        .kv
-                        .write_opt(pending.wb, &write_opts)
-                        .unwrap_or_else(|e| {
-                            panic!("failed to write to engine: {:?}", e);
-                        });
+                    // Let's write pending wb.
+                    wb = pending.wb
                 }
             }
+
+            // Persist apply state and region data.
+            write_apply_state(&self.engines, &mut wb, region_id, &apply_state);
+            let mut write_opts = WriteOptions::new();
+            write_opts.set_sync(true);
+            self.engines
+                .kv
+                .write_opt(wb, &write_opts)
+                .unwrap_or_else(|e| {
+                    panic!("failed to write to engine: {:?}", e);
+                });
 
             if delegate.pending_apply_execute_result.is_none() && delegate.pending_remove {
                 // If the delegate id pending remove and it has no pending_apply_execute_result
