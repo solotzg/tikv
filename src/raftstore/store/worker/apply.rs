@@ -621,9 +621,13 @@ impl ApplyDelegate {
     }
 
     fn join_then_take_entries(&mut self, entries: Vec<Entry>) -> Option<VecDeque<Entry>> {
-        if self.pending_apply_entries.as_ref().unwrap().len() + entries.len() == 0 {
-            // No entries need to apply.
-            return None;
+        if self.pending_apply_entries.is_none() {
+            if entries.is_empty() {
+                // No entries need to apply.
+                return None;
+            } else {
+                return Some(entries.into());
+            }
         }
         let mut pending = self.pending_apply_entries.take().unwrap();
         pending.append(&mut entries.into());
@@ -2207,6 +2211,12 @@ pub enum TaskRes {
     Destroy(ApplyDelegate),
 }
 
+enum ApplyTask {
+    Applys(Vec<Apply>),
+    // Kick apply delegate to apply pending commands.
+    Kick(u64),
+}
+
 // TODO: use threadpool to do task concurrently
 pub struct Runner {
     engines: Engines,
@@ -2246,8 +2256,32 @@ impl Runner {
         }
     }
 
-    fn handle_applies(&mut self, applys: Vec<Apply>) {
+    fn handle_applies(&mut self, task: ApplyTask) {
         let t = SlowTimer::new();
+
+        let applys = match task {
+            ApplyTask::Applys(applys) => applys,
+            ApplyTask::Kick(region_id) => match self.delegates.get_mut(&region_id) {
+                None => {
+                    error!("[region {}] is missing", region_id);
+                    return;
+                }
+                Some(e) => {
+                    let delegate = e.as_mut().unwrap();
+                    match delegate.join_then_take_entries(vec![]) {
+                        None => vec![],
+                        Some(entries) => {
+                            info!("{} kicked with {} entries", delegate.tag, entries.len());
+                            vec![Apply::new(
+                                delegate.region.get_id(),
+                                delegate.term,
+                                entries.into(),
+                            )]
+                        }
+                    }
+                }
+            },
+        };
 
         let mut core = ApplyContextCore::new(self.host.as_ref(), self.importer.as_ref())
             .apply_capacity(applys.len())
@@ -2401,6 +2435,9 @@ impl Runner {
                 applied_index_term,
                 merged: false, // TODO: consider region merge.
             });
+
+            // To apply pending entries as soon as possible, we should kick it.
+            self.handle_applies(ApplyTask::Kick(region_id));
         }
         self.notifier.send(TaskRes::Applys(apply_res)).unwrap();
     }
@@ -2480,7 +2517,7 @@ impl Runnable<Task> for Runner {
             Task::Applies(a) => {
                 let elapsed = duration_to_sec(a.start.elapsed());
                 APPLY_TASK_WAIT_TIME_HISTOGRAM.observe(elapsed);
-                self.handle_applies(a.vec);
+                self.handle_applies(ApplyTask::Applys(a.vec));
             }
             Task::Applied(resp_batch) => self.handle_applied_command_batch(resp_batch),
             Task::Proposals(props) => self.handle_proposals(props),

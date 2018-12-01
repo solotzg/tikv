@@ -1150,13 +1150,12 @@ impl Peer {
             );
             return;
         }
-        if apply_state.get_applied_index() <= self.raft_group.get_store().applied_index() {
-            info!(
-                "{} drop stale apply results, advanced, applied_index_term: {}, {:?}, current applied index: {:?}",
-                self.tag, applied_index_term, apply_state, self.raft_group.get_store().applied_index()
-            );
-            return;
-        }
+
+        assert!(
+            apply_state.get_applied_index() >= self.raft_group.get_store().applied_index(),
+            "{} drop stale apply results, advanced, applied_index_term: {}, {:?}, current applied index: {:?}",
+            self.tag, applied_index_term, apply_state, self.raft_group.get_store().applied_index()
+        );
 
         if !merged {
             self.raft_group
