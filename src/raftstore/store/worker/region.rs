@@ -374,12 +374,14 @@ impl SnapContext {
         state.set_peer(peer);
         let mut req = SnapshotRequest::new();
         req.set_state(state);
+        info!("[region {}] send snapshot state {:?}", region_id, req);
         chunk_sender.unbounded_send(req).unwrap();
 
         // Send snapshot data.
         const BATCH_SIZE: usize = 100;
         let mut kv_batch = Vec::with_capacity(BATCH_SIZE);
         for cf in DATA_CFS {
+            info!("[region {}] send snapshot data {}", region_id, cf);
             raw_snapshot
                 .scan_cf(cf, &start_key, &end_key, false, |key, value| {
                     if kv_batch.len() == BATCH_SIZE {
