@@ -1151,8 +1151,18 @@ impl Peer {
             return;
         }
 
-        if apply_state.get_applied_index() >= self.raft_group.get_store().applied_index() {
-            // Engine sends apply states but they may arrive later than snap done.
+        if self.last_applying_idx < apply_state.get_applied_index() {
+            info!(
+                "{} advance last_applying_idx from {} to {} apply_state: {:?}, current applied index: {:?}",
+                self.tag, self.last_applying_idx, apply_state.get_applied_index(),
+                apply_state, self.raft_group.get_store().applied_index(),
+            );
+            self.last_applying_idx = apply_state.get_applied_index()
+        }
+
+        if apply_state.get_applied_index() <= self.raft_group.get_store().applied_index() {
+            // Engine may report apply state to tikv periodically.
+            // And engine sends apply states but they may arrive later than snap done.
             info!(
                 "{} drop stale apply results, advanced, applied_index_term: {}, {:?}, current applied index: {:?}",
                 self.tag, applied_index_term, apply_state, self.raft_group.get_store().applied_index()
