@@ -658,20 +658,25 @@ impl ApplyDelegate {
         // commands again.
         apply_ctx.committed_count += committed_entries.len();
         // let mut results = vec![];
+        let mut next_idx = 0;
         while let Some(entry) = committed_entries.pop_front() {
             if self.pending_remove {
                 // This peer is about to be destroyed, skip everything.
                 break;
             }
 
-            let expect_index = self.apply_state.get_applied_index() + 1;
-            if expect_index != entry.get_index() {
-                panic!(
-                    "{} expect index {}, but got {}",
-                    self.tag,
-                    expect_index,
-                    entry.get_index()
-                );
+            if next_idx == 0 {
+                next_idx = entry.get_index();
+            } else {
+                next_idx += 1;
+                if next_idx != entry.get_index() {
+                    panic!(
+                        "{} expect index {}, but got {}",
+                        self.tag,
+                        next_idx,
+                        entry.get_index()
+                    );
+                }
             }
 
             match entry.get_entry_type() {
@@ -2364,7 +2369,7 @@ impl Runner {
             let header = resp.take_header();
             let region_id = header.get_region_id();
 
-            info!(
+            debug!(
                 "[region {}] receive apply command response {:?}",
                 region_id, resp
             );
@@ -2407,16 +2412,28 @@ impl Runner {
                 }
             }
 
-            // Persist apply state and region data.
-            write_apply_state(&self.engines, &mut wb, region_id, &apply_state);
-            let mut write_opts = WriteOptions::new();
-            write_opts.set_sync(true);
-            self.engines
-                .kv
-                .write_opt(wb, &write_opts)
-                .unwrap_or_else(|e| {
-                    panic!("failed to write to engine: {:?}", e);
-                });
+            // Try advance apply state. To prevent overwrite apply_state during snapshot
+            // we must write apply_state when it has advanced in engine server.
+            if delegate.apply_state.get_applied_index() < apply_state.get_applied_index() {
+                info!(
+                    "{} advance apply state from {:?} to {:?}",
+                    delegate.tag, delegate.apply_state, apply_state
+                );
+                write_apply_state(&self.engines, &mut wb, region_id, &apply_state);
+                delegate.apply_state = apply_state.clone();
+            }
+
+            // Persist apply state and region data if any
+            if !wb.is_empty() {
+                let mut write_opts = WriteOptions::new();
+                write_opts.set_sync(true);
+                self.engines
+                    .kv
+                    .write_opt(wb, &write_opts)
+                    .unwrap_or_else(|e| {
+                        panic!("failed to write to engine: {:?}", e);
+                    });
+            }
 
             if delegate.pending_apply_execute_result.is_none() && delegate.pending_remove {
                 // If the delegate id pending remove and it has no pending_apply_execute_result

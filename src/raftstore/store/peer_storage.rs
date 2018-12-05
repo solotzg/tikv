@@ -433,6 +433,12 @@ fn init_last_term(
     raft_state: &RaftLocalState,
     apply_state: &RaftApplyState,
 ) -> Result<u64> {
+    info!(
+        "[region {}] init last term [raft state {:?}], [apply state {:?}]",
+        region.get_id(),
+        raft_state,
+        apply_state
+    );
     let last_idx = raft_state.get_last_index();
     if last_idx == 0 {
         return Ok(0);
