@@ -946,8 +946,6 @@ impl Engines {
     }
 
     pub fn engine_client(&self) -> EngineClient {
-        const MAX_GRPC_RECV_MSG_LEN: i32 = 1024 * 1024 * 1024;
-        const MAX_GRPC_SEND_MSG_LEN: i32 = 1024 * 1024 * 1024;
         const DEFAULT_GRPC_STREAM_INITIAL_WINDOW_SIZE: i32 = 2 * 1024 * 1024;
 
         let cfg = self.engine_client_cfg.as_ref().unwrap();

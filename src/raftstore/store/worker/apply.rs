@@ -532,24 +532,48 @@ fn write_apply_state(
         });
 }
 
-struct PendingExecResult {
+struct PendingSyncResult {
     index: u64,
-    wb: WriteBatch,
-    res: ExecResult,
+    wb: Option<WriteBatch>,
+    // It may be none if we are waiting for snapshot or destroy.
+    res: Option<ExecResult>,
+
+    pending_destroy: bool,
 }
 
-impl fmt::Debug for PendingExecResult {
+impl Drop for PendingSyncResult {
+    fn drop(&mut self) {
+        assert!(self.res.is_none(), "{:?}", self.res);
+        assert!(self.wb.is_none());
+    }
+}
+
+impl fmt::Debug for PendingSyncResult {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("PendingExecResult")
+        f.debug_struct("PendingSyncResult")
             .field("index", &self.index)
             .field("res", &self.res)
             .finish()
     }
 }
 
-impl PendingExecResult {
-    fn new(index: u64, wb: WriteBatch, res: ExecResult) -> PendingExecResult {
-        PendingExecResult { index, wb, res }
+impl PendingSyncResult {
+    fn new(index: u64, wb: WriteBatch, res: Option<ExecResult>) -> PendingSyncResult {
+        PendingSyncResult {
+            index,
+            res,
+            wb: Some(wb),
+            pending_destroy: false,
+        }
+    }
+
+    fn destroy() -> PendingSyncResult {
+        PendingSyncResult {
+            index: 0,
+            res: None,
+            wb: None,
+            pending_destroy: true,
+        }
     }
 }
 
@@ -580,7 +604,7 @@ pub struct ApplyDelegate {
     // the raftstore, then send a `sync-log` request to engine and waits a
     // response.
     // After received a response, we continue the delegate and the peer.
-    pending_apply_execute_result: Option<PendingExecResult>,
+    pending_sync_result: Option<PendingSyncResult>,
     // Buffer entries when it meets sync-log requests(admin commands..).
     // We must check and apply pending requests after received responses.
     pending_apply_entries: Option<VecDeque<Entry>>,
@@ -608,7 +632,7 @@ impl ApplyDelegate {
             last_merge_version: 0,
 
             pending_apply_entries: Some(VecDeque::new()),
-            pending_apply_execute_result: None,
+            pending_sync_result: None,
         }
     }
 
@@ -643,7 +667,7 @@ impl ApplyDelegate {
             // Because of we have check entries outside that it is never empty.
             unreachable!();
         }
-        if self.pending_apply_execute_result.is_some() {
+        if self.pending_sync_result.is_some() {
             // We have sent a sync-log request to engine server and does not receive
             // any response, so we wait.
             self.pending_apply_entries = Some(committed_entries);
@@ -684,7 +708,7 @@ impl ApplyDelegate {
                 EntryType::EntryConfChange => self.handle_raft_entry_conf_change(apply_ctx, entry),
             }
 
-            if self.pending_apply_execute_result.is_some() {
+            if self.pending_sync_result.is_some() {
                 // It needs to wait engine server to apply sync-log request,
                 break;
             }
@@ -753,11 +777,11 @@ impl ApplyDelegate {
         let conf_change: ConfChange = util::parse_data_at(entry.get_data(), index, &self.tag);
         let cmd = util::parse_data_at(conf_change.get_context(), index, &self.tag);
 
-        assert!(self.pending_apply_execute_result.is_none());
+        assert!(self.pending_sync_result.is_none());
         self.process_raft_cmd(apply_ctx, index, term, cmd);
-        if self.pending_apply_execute_result.is_some() {
-            if let Some(ref mut pending) = self.pending_apply_execute_result {
-                if let ExecResult::ChangePeer(ref mut cp) = pending.res {
+        if self.pending_sync_result.is_some() {
+            if let Some(ref mut pending) = self.pending_sync_result {
+                if let Some(ExecResult::ChangePeer(ref mut cp)) = pending.res {
                     cp.conf_change = conf_change;
                 } else {
                     panic!(
@@ -768,15 +792,15 @@ impl ApplyDelegate {
             } else {
                 panic!(
                     "{} unexpected result {:?} for conf change {:?} at {}",
-                    self.tag, self.pending_apply_execute_result, conf_change, index
+                    self.tag, self.pending_sync_result, conf_change, index
                 );
             }
         } else {
             // If failed, tell raft that the config change was aborted.
-            self.pending_apply_execute_result = Some(PendingExecResult::new(
+            self.pending_sync_result = Some(PendingSyncResult::new(
                 index,
                 WriteBatch::new(),
-                ExecResult::ChangePeer(Default::default()),
+                Some(ExecResult::ChangePeer(Default::default())),
             ));
 
             // It also requires sync engine.
@@ -934,14 +958,11 @@ impl ApplyDelegate {
             }
 
             assert!(success);
-            info!(
-                "{} set pending_apply_execute_result at index {}",
-                self.tag, index
-            );
-            self.pending_apply_execute_result = Some(PendingExecResult::new(
+            info!("{} set pending_sync_result at index {}", self.tag, index);
+            self.pending_sync_result = Some(PendingSyncResult::new(
                 index,
                 ctx.take_wb().unwrap(),
-                exec_result,
+                Some(exec_result),
             ));
         }
 
@@ -2390,25 +2411,39 @@ impl Runner {
             let mut wb = WriteBatch::new();
             let mut exec_res = vec![];
             // Set it to false, since we have received its responses.
-            if delegate.pending_apply_execute_result.is_some() {
-                if delegate
-                    .pending_apply_execute_result
-                    .as_ref()
-                    .unwrap()
-                    .index <= apply_state.get_applied_index()
-                {
+            if delegate.pending_sync_result.is_some() {
+                let (pending_destroy, pending_index) = {
+                    let pending_sync_result = delegate.pending_sync_result.as_ref().unwrap();
+                    (
+                        pending_sync_result.pending_destroy,
+                        pending_sync_result.index,
+                    )
+                };
+                if pending_destroy {
+                    if header.get_destroyed() {
+                        // Engine server has destroyed the region.
+                        info!("{} remove apply delegate", delegate.tag);
+                        delegate.destroy();
+                        self.delegates.remove(&region_id);
+                        self.notifier.send(TaskRes::Destroy(delegate)).unwrap();
+                        continue;
+                    }
+                } else if pending_index <= apply_state.get_applied_index() {
                     // Engine server has persist apply results.
-                    let mut pending = delegate.pending_apply_execute_result.take().unwrap();
-                    match pending.res {
+                    let mut pending = delegate.pending_sync_result.take().unwrap();
+                    match pending.res.take() {
                         // Drop consistency check results, because we have checked them in
                         // engine servers.
-                        ExecResult::ComputeHash { .. } | ExecResult::VerifyHash { .. } => {}
-                        other => {
+                        Some(ExecResult::ComputeHash { .. })
+                        | Some(ExecResult::VerifyHash { .. })
+                        // For snapshot or destroy, there is no exec result.
+                        | None => {}
+                        Some(other) => {
                             exec_res.push(other);
                         }
                     }
                     // Let's write pending wb.
-                    wb = pending.wb
+                    wb = pending.wb.take().unwrap();
                 }
             }
 
@@ -2435,8 +2470,8 @@ impl Runner {
                     });
             }
 
-            if delegate.pending_apply_execute_result.is_none() && delegate.pending_remove {
-                // If the delegate id pending remove and it has no pending_apply_execute_result
+            if delegate.pending_sync_result.is_none() && delegate.pending_remove {
+                // If the delegate id pending remove and it has no pending_sync_result
                 // then we can remove the delegate.
                 delegate.destroy();
                 self.delegates.remove(&region_id);
@@ -2513,11 +2548,23 @@ impl Runner {
     fn handle_destroy(&mut self, d: Destroy) {
         // Only respond when the meta exists. Otherwise if destroy is triggered
         // multiple times, the store may destroy wrong target peer.
-        if let Some(meta) = self.delegates.remove(&d.region_id) {
-            let mut meta = meta.unwrap();
-            info!("{} remove from apply delegates", meta.tag);
-            meta.destroy();
-            self.notifier.send(TaskRes::Destroy(meta)).unwrap();
+        if let Some(ref mut meta) = self.delegates.get_mut(&d.region_id) {
+            let delegate = meta.as_mut().unwrap();
+            info!("{} pending destroy from apply delegates", delegate.tag);
+            // TODO: What if there are some ongoing pending sync result.
+            delegate.pending_sync_result = Some(PendingSyncResult::destroy());
+
+            let mut req = CommandRequest::new();
+            req.mut_header().set_region_id(d.region_id);
+            req.mut_header().set_destroy(true);
+            let reqs = vec![req];
+            let mut batch = CommandRequestBatch::new();
+            batch.set_requests(reqs.into());
+            self.cmds_sender
+                .unbounded_send((batch, WriteFlags::default()))
+                .unwrap();
+
+            // Postpone TaskRes::Destroy until we receives destroy response.
         }
     }
 

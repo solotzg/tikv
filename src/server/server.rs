@@ -15,7 +15,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
-use grpc::{ChannelBuilder, EnvBuilder, Environment, Server as GrpcServer, ServerBuilder};
+use grpc::{ChannelBuilder, Environment, Server as GrpcServer, ServerBuilder};
 use kvproto::debugpb_grpc::create_debug;
 use kvproto::import_sstpb_grpc::create_import_sst;
 use kvproto::tikvpb_grpc::*;
