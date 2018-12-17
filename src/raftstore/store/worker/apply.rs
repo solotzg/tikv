@@ -259,6 +259,8 @@ struct ApplyContextCore<'a> {
     use_delete_range: bool,
 
     command_context: Option<Vec<u8>>,
+
+    pending_destroy_tasks: Vec<Destroy>,
 }
 
 impl<'a> ApplyContextCore<'a> {
@@ -280,6 +282,7 @@ impl<'a> ApplyContextCore<'a> {
             exec_ctx: None,
             use_delete_range: false,
             command_context: None,
+            pending_destroy_tasks: vec![],
         }
     }
 
@@ -608,6 +611,10 @@ pub struct ApplyDelegate {
     // Buffer entries when it meets sync-log requests(admin commands..).
     // We must check and apply pending requests after received responses.
     pending_apply_entries: Option<VecDeque<Entry>>,
+    // Set it to Some when the delegate is going to be destroyed but there are
+    // still pending_apply_entries. And We should handle destroy once there is
+    // no pending_apply_entries.
+    pending_destroy_task: Option<Destroy>,
 }
 
 impl ApplyDelegate {
@@ -633,6 +640,7 @@ impl ApplyDelegate {
 
             pending_apply_entries: Some(VecDeque::new()),
             pending_sync_result: None,
+            pending_destroy_task: None,
         }
     }
 
@@ -2161,6 +2169,7 @@ pub struct ApplyBatch {
     start: Instant,
 }
 
+#[derive(Debug)]
 pub struct Destroy {
     region_id: u64,
 }
@@ -2309,46 +2318,70 @@ impl Runner {
             },
         };
 
-        let mut core = ApplyContextCore::new(self.host.as_ref(), self.importer.as_ref())
-            .apply_capacity(applys.len())
-            .use_delete_range(self.use_delete_range)
-            .enable_sync_log(self.sync_log);
-        for apply in applys {
-            if core.merged_regions.contains(&apply.region_id) {
-                continue;
-            }
-
-            let mut delegate = match self.delegates.get_mut(&apply.region_id) {
-                None => {
-                    error!("[region {}] is missing", apply.region_id);
+        let (apply_cmds, pending_destroy_tasks, mut cbs, mut merged_regions, committed_count) = {
+            let mut core = ApplyContextCore::new(self.host.as_ref(), self.importer.as_ref())
+                .apply_capacity(applys.len())
+                .use_delete_range(self.use_delete_range)
+                .enable_sync_log(self.sync_log);
+            for apply in applys {
+                if core.merged_regions.contains(&apply.region_id) {
                     continue;
                 }
-                Some(e) => e.take().unwrap(),
-            };
 
-            if let Some(entries) = delegate.join_then_take_entries(apply.entries) {
-                // We get some entries to apply.
-                delegate.metrics = ApplyMetrics::default();
-                delegate.term = apply.term;
+                let mut delegate = match self.delegates.get_mut(&apply.region_id) {
+                    None => {
+                        error!("[region {}] is missing", apply.region_id);
+                        continue;
+                    }
+                    Some(e) => e.take().unwrap(),
+                };
 
-                let mut ctx = ApplyContext::new(&mut core, &mut self.delegates);
-                delegate.handle_raft_committed_entries(&mut ctx, entries);
+                if let Some(entries) = delegate.join_then_take_entries(apply.entries) {
+                    // We get some entries to apply.
+                    delegate.metrics = ApplyMetrics::default();
+                    delegate.term = apply.term;
+
+                    let mut ctx = ApplyContext::new(&mut core, &mut self.delegates);
+                    delegate.handle_raft_committed_entries(&mut ctx, entries);
+                }
+
+                // Collect delegate's pending destroy task if there is no pending_sync_result.
+                if delegate.pending_sync_result.is_none() {
+                    if let Some(destroy) = delegate.pending_destroy_task.take() {
+                        core.pending_destroy_tasks.push(destroy);
+                    }
+                }
+
+                *self.delegates.get_mut(&apply.region_id).unwrap() = Some(delegate);
             }
 
-            *self.delegates.get_mut(&apply.region_id).unwrap() = Some(delegate);
-        }
+            (
+                core.apply_cmds,
+                core.pending_destroy_tasks,
+                core.cbs,
+                core.merged_regions,
+                core.committed_count,
+            )
+        };
 
-        if !core.apply_cmds.is_empty() {
-            let mut reqs = Vec::new();
-            ::std::mem::swap(&mut core.apply_cmds, &mut reqs);
+        if !apply_cmds.is_empty() {
             let mut batch = CommandRequestBatch::new();
-            batch.set_requests(reqs.into());
+            batch.set_requests(apply_cmds.into());
             // TODO: handle errors
             self.cmds_sender
                 .unbounded_send((batch, WriteFlags::default()))
                 .unwrap();
         }
 
+        if !pending_destroy_tasks.is_empty() {
+            debug!(
+                "handle collected pending destroy tasks {:?}",
+                pending_destroy_tasks
+            );
+            for d in pending_destroy_tasks {
+                self.handle_destroy(d);
+            }
+        }
         // Write to engine
         // raftsotre.sync-log = true means we need prevent data loss when power failure.
         // take raft log gc for example, we write kv WAL first, then write raft WAL,
@@ -2357,12 +2390,11 @@ impl Runner {
         //
         // core.write_to_db(&self.engines.kv);
 
-        // TODO: remove it!
-        for cbs in core.cbs.drain(..) {
+        for cbs in cbs.drain(..) {
             cbs.invoke_all(&self.host);
         }
 
-        for region_id in core.merged_regions.drain(..) {
+        for region_id in merged_regions.drain(..) {
             if let Some(mut e) = self.delegates.remove(&region_id) {
                 e.as_mut().unwrap().destroy();
             }
@@ -2376,7 +2408,7 @@ impl Runner {
             t,
             "{} handle ready {} committed entries",
             self.tag,
-            core.committed_count
+            committed_count
         );
     }
 
@@ -2550,8 +2582,12 @@ impl Runner {
         // multiple times, the store may destroy wrong target peer.
         if let Some(ref mut meta) = self.delegates.get_mut(&d.region_id) {
             let delegate = meta.as_mut().unwrap();
+            if delegate.pending_sync_result.is_some() {
+                info!("{} buffer destroy due to pending_sync_result", delegate.tag);
+                delegate.pending_destroy_task = Some(d);
+                return;
+            }
             info!("{} pending destroy from apply delegates", delegate.tag);
-            // TODO: What if there are some ongoing pending sync result.
             delegate.pending_sync_result = Some(PendingSyncResult::destroy());
 
             let mut req = CommandRequest::new();
