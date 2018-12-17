@@ -2181,6 +2181,7 @@ pub enum Task {
     Proposals(Vec<RegionProposal>),
     Destroy(Destroy),
     Applied(CommandResponseBatch),
+    TrySync(Vec<u64>),
 }
 
 impl Task {
@@ -2202,6 +2203,10 @@ impl Task {
     pub fn applied(resp_batch: CommandResponseBatch) -> Task {
         Task::Applied(resp_batch)
     }
+
+    pub fn try_sync(region_ids: Vec<u64>) -> Task {
+        Task::TrySync(region_ids)
+    }
 }
 
 impl Display for Task {
@@ -2214,6 +2219,9 @@ impl Display for Task {
             }
             Task::Destroy(ref d) => write!(f, "[region {}] destroy", d.region_id),
             Task::Applied(_) => write!(f, "async applied batch"),
+            Task::TrySync(ref region_ids) => {
+                write!(f, "try sync with engine region {:?}", region_ids)
+            }
         }
     }
 }
@@ -2604,6 +2612,23 @@ impl Runner {
         }
     }
 
+    fn handle_try_sync(&mut self, region_ids: Vec<u64>) {
+        // Send sync request immediately.
+        let mut batch = CommandRequestBatch::new();
+        let mut reqs = Vec::with_capacity(region_ids.len());
+        for region_id in region_ids {
+            let mut req = CommandRequest::new();
+            // Do not set term and index.
+            req.mut_header().set_region_id(region_id);
+            req.mut_header().set_sync_log(true);
+            reqs.push(req);
+        }
+        batch.set_requests(reqs.into());
+        self.cmds_sender
+            .unbounded_send((batch, WriteFlags::default()))
+            .unwrap();
+    }
+
     fn handle_shutdown(&mut self) {
         for p in self.delegates.values_mut() {
             p.as_mut().unwrap().clear_pending_commands();
@@ -2623,6 +2648,7 @@ impl Runnable<Task> for Runner {
             Task::Proposals(props) => self.handle_proposals(props),
             Task::Registration(s) => self.handle_registration(s),
             Task::Destroy(d) => self.handle_destroy(d),
+            Task::TrySync(region_ids) => self.handle_try_sync(region_ids),
         }
     }
 

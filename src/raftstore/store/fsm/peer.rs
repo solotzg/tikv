@@ -649,7 +649,7 @@ impl<T: Transport, C: PdClient> Store<T, C> {
         self.raft_metrics.ready.pending_region += pending_count as u64;
 
         let mut region_proposals = Vec::with_capacity(pending_count);
-        let (kv_wb, raft_wb, append_res, sync_log) = {
+        let (kv_wb, raft_wb, append_res, sync_log, pending_sync_region) = {
             let mut ctx = ReadyContext::new(&mut self.raft_metrics, &self.trans, pending_count);
             for region_id in self.pending_raft_groups.drain() {
                 if let Some(peer) = self.region_peers.get_mut(&region_id) {
@@ -659,7 +659,13 @@ impl<T: Transport, C: PdClient> Store<T, C> {
                     peer.handle_raft_ready_append(&mut ctx, &self.pd_worker);
                 }
             }
-            (ctx.kv_wb, ctx.raft_wb, ctx.ready_res, ctx.sync_log)
+            (
+                ctx.kv_wb,
+                ctx.raft_wb,
+                ctx.ready_res,
+                ctx.sync_log,
+                ctx.pending_sync_region,
+            )
         };
 
         if !region_proposals.is_empty() {
@@ -671,6 +677,12 @@ impl<T: Transport, C: PdClient> Store<T, C> {
             // broadcast the message to other followers, so we should flush the
             // messages ASAP.
             self.trans.flush();
+        }
+
+        if !pending_sync_region.is_empty() {
+            self.apply_worker
+                .schedule(ApplyTask::try_sync(pending_sync_region))
+                .unwrap();
         }
 
         self.raft_metrics.ready.has_ready_region += append_res.len() as u64;

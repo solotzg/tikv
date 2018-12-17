@@ -158,6 +158,7 @@ pub struct ReadyContext<'a, T: 'a> {
     pub metrics: &'a mut RaftMetrics,
     pub trans: &'a T,
     pub ready_res: Vec<(Ready, InvokeContext)>,
+    pub pending_sync_region: Vec<u64>,
 }
 
 impl<'a, T> ReadyContext<'a, T> {
@@ -169,6 +170,7 @@ impl<'a, T> ReadyContext<'a, T> {
             metrics,
             trans,
             ready_res: Vec::with_capacity(cap),
+            pending_sync_region: Vec::new(),
         }
     }
 }
@@ -923,6 +925,7 @@ impl Peer {
                 self.get_store().applied_index(),
                 self.last_applying_idx
             );
+            ctx.pending_sync_region.push(self.region_id);
             return;
         }
 
