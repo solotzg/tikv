@@ -60,6 +60,7 @@ use util::{escape, rocksdb, MustConsumeVec};
 
 use super::metrics::*;
 
+#[allow(dead_code)]
 const WRITE_BATCH_MAX_KEYS: usize = 128;
 const DEFAULT_APPLY_WB_SIZE: usize = 4 * 1024;
 const SHRINK_PENDING_CMD_QUEUE_CAP: usize = 64;
@@ -321,6 +322,7 @@ impl<'a> ApplyContextCore<'a> {
     /// write the changes into rocksdb.
     ///
     /// This call is valid only when it's between a `prepare_for` and `finish_for`.
+    #[allow(dead_code)]
     pub fn commit(&mut self, delegate: &mut ApplyDelegate) {
         if self.last_applied_index < delegate.apply_state.get_applied_index() {
             write_apply_state(
@@ -362,6 +364,7 @@ impl<'a> ApplyContextCore<'a> {
     }
 
     /// Finish applys for the delegate.
+    #[allow(dead_code)]
     pub fn finish_for(&mut self, delegate: &mut ApplyDelegate, results: Vec<ExecResult>) {
         if !delegate.pending_remove {
             // TODO: write apply state according to CommandResponses.
@@ -487,6 +490,7 @@ pub fn notify_stale_req(term: u64, cb: Callback) {
 }
 
 /// Check if a write is needed to be issued before handle the command.
+#[allow(dead_code)]
 fn should_write_to_engine(cmd: &RaftCmdRequest, wb_keys: usize) -> bool {
     if cmd.has_admin_request() {
         match cmd.get_admin_request().get_cmd_type() {
@@ -1771,7 +1775,7 @@ impl ApplyDelegate {
                     self.handle_delete_range(req, &mut ranges, ctx.use_delete_range)
                 }
                 CmdType::IngestSST => {
-                    self.handle_ingest_sst(ctx, req, &mut ssts);
+                    let _ = self.handle_ingest_sst(ctx, req, &mut ssts);
                     panic!("CmdType::IngestSST is not supported");
                 }
                 // Readonly commands are handled in raftstore directly.
