@@ -122,11 +122,18 @@ impl<T: RaftStoreRouter + 'static, E: Engine> tikvpb_grpc::Tikv for Service<T, E
         options.key_only = req.get_key_only();
         options.reverse_scan = req.get_reverse();
 
+        let end_key = if req.get_end_key().is_empty() {
+            None
+        } else {
+            Some(Key::from_raw(req.get_end_key()))
+        };
+
         let future = self
             .storage
             .async_scan(
                 req.take_context(),
                 Key::from_raw(req.get_start_key()),
+                end_key,
                 req.get_limit() as usize,
                 req.get_version(),
                 options,
@@ -469,7 +476,6 @@ impl<T: RaftStoreRouter + 'static, E: Engine> tikvpb_grpc::Tikv for Service<T, E
         ctx.spawn(future);
     }
 
-    // WARNING: Currently this API may leave some dirty keys in TiKV. Be careful using this API.
     fn kv_delete_range(
         &mut self,
         ctx: RpcContext,
@@ -576,14 +582,22 @@ impl<T: RaftStoreRouter + 'static, E: Engine> tikvpb_grpc::Tikv for Service<T, E
     ) {
         let timer = GRPC_MSG_HISTOGRAM_VEC.raw_scan.start_coarse_timer();
 
+        let end_key = if req.get_end_key().is_empty() {
+            None
+        } else {
+            Some(req.take_end_key())
+        };
+
         let future = self
             .storage
             .async_raw_scan(
                 req.take_context(),
                 req.take_cf(),
                 req.take_start_key(),
+                end_key,
                 req.get_limit() as usize,
                 req.get_key_only(),
+                req.get_reverse(),
             )
             .then(|v| {
                 let mut resp = RawScanResponse::new();
@@ -619,6 +633,7 @@ impl<T: RaftStoreRouter + 'static, E: Engine> tikvpb_grpc::Tikv for Service<T, E
                 req.take_ranges().into_vec(),
                 req.get_each_limit() as usize,
                 req.get_key_only(),
+                req.get_reverse(),
             )
             .then(|v| {
                 let mut resp = RawBatchScanResponse::new();
@@ -957,11 +972,11 @@ impl<T: RaftStoreRouter + 'static, E: Engine> tikvpb_grpc::Tikv for Service<T, E
     ) {
         let timer = GRPC_MSG_HISTOGRAM_VEC.mvcc_get_by_key.start_coarse_timer();
 
-        let storage = self.storage.clone();
-
         let key = Key::from_raw(req.get_key());
         let (cb, f) = paired_future_callback();
-        let res = storage.async_mvcc_by_key(req.take_context(), key.clone(), cb);
+        let res = self
+            .storage
+            .async_mvcc_by_key(req.take_context(), key.clone(), cb);
 
         let future = AndThenWith::new(res, f.map_err(Error::from))
             .and_then(|v| {
@@ -997,11 +1012,10 @@ impl<T: RaftStoreRouter + 'static, E: Engine> tikvpb_grpc::Tikv for Service<T, E
             .mvcc_get_by_start_ts
             .start_coarse_timer();
 
-        let storage = self.storage.clone();
-
         let (cb, f) = paired_future_callback();
-
-        let res = storage.async_mvcc_by_start_ts(req.take_context(), req.get_start_ts(), cb);
+        let res = self
+            .storage
+            .async_mvcc_by_start_ts(req.take_context(), req.get_start_ts(), cb);
 
         let future = AndThenWith::new(res, f.map_err(Error::from))
             .and_then(|v| {
@@ -1142,13 +1156,14 @@ fn extract_key_error(err: &storage::Error) -> KeyError {
         // failed in prewrite
         storage::Error::Txn(TxnError::Mvcc(MvccError::WriteConflict {
             start_ts,
-            conflict_ts,
+            conflict_start_ts,
             ref key,
             ref primary,
+            ..
         })) => {
             let mut write_conflict = WriteConflict::new();
             write_conflict.set_start_ts(start_ts);
-            write_conflict.set_conflict_ts(conflict_ts);
+            write_conflict.set_conflict_ts(conflict_start_ts);
             write_conflict.set_key(key.to_owned());
             write_conflict.set_primary(primary.to_owned());
             key_error.set_conflict(write_conflict);
@@ -1158,6 +1173,10 @@ fn extract_key_error(err: &storage::Error) -> KeyError {
         // failed in commit
         storage::Error::Txn(TxnError::Mvcc(MvccError::TxnLockNotFound { .. })) => {
             warn!("txn conflicts: {:?}", err);
+            key_error.set_retryable(format!("{:?}", err));
+        }
+        storage::Error::Closed => {
+            warn!("tikv server is closing");
             key_error.set_retryable(format!("{:?}", err));
         }
         _ => {
@@ -1269,19 +1288,21 @@ mod tests {
     #[test]
     fn test_extract_key_error_write_conflict() {
         let start_ts = 110;
-        let conflict_ts = 108;
+        let conflict_start_ts = 108;
+        let conflict_commit_ts = 109;
         let key = b"key".to_vec();
         let primary = b"primary".to_vec();
         let case = storage::Error::from(TxnError::from(MvccError::WriteConflict {
             start_ts,
-            conflict_ts,
+            conflict_start_ts,
+            conflict_commit_ts,
             key: key.clone(),
             primary: primary.clone(),
         }));
         let mut expect = KeyError::new();
         let mut write_conflict = WriteConflict::new();
         write_conflict.set_start_ts(start_ts);
-        write_conflict.set_conflict_ts(conflict_ts);
+        write_conflict.set_conflict_ts(conflict_start_ts);
         write_conflict.set_key(key);
         write_conflict.set_primary(primary);
         expect.set_conflict(write_conflict);
