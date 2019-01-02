@@ -22,8 +22,7 @@ extern crate jemallocator;
 extern crate libc;
 #[macro_use]
 extern crate log;
-#[macro_use(slog_o, slog_kv)]
-extern crate slog;
+extern crate grpcio as grpc;
 #[cfg(unix)]
 extern crate nix;
 extern crate prometheus;
@@ -31,13 +30,13 @@ extern crate rocksdb;
 extern crate serde_json;
 #[cfg(unix)]
 extern crate signal;
+extern crate slog;
 extern crate slog_async;
 extern crate slog_scope;
 extern crate slog_stdlog;
 extern crate slog_term;
 #[macro_use]
 extern crate tikv;
-extern crate grpcio as grpc;
 extern crate toml;
 
 #[cfg(unix)]
@@ -402,8 +401,8 @@ fn main() {
 
     // Sets the global logger ASAP.
     // It is okay to use the config w/o `validata()`,
-    // because `init_log()` handles various conditions.
-    let guard = init_log(&config);
+    // because `initial_logger()` handles various conditions.
+    let guard = initial_logger(&config);
     tikv_util::set_exit_hook(false, Some(guard), &config.storage.data_dir);
 
     // Print version information.
