@@ -1006,6 +1006,17 @@ impl ApplyDelegate {
         }
     }
 
+    fn clear_pending_sync_result(&mut self) {
+        if let Some(mut pending_res) = self.pending_sync_result.take() {
+            let _ = pending_res.wb.take();
+            let res = pending_res.res.take();
+            info!(
+                "{} clear pending sync result, index: {}, res: {:?}, pending_destroy: {}",
+                self.tag, pending_res.index, res, pending_res.pending_destroy
+            );
+        }
+    }
+
     fn destroy(&mut self) {
         for cmd in self.pending_cmds.normals.drain(..) {
             notify_region_removed(self.region.get_id(), self.id, cmd);
@@ -2628,7 +2639,9 @@ impl Runner {
 
     fn handle_shutdown(&mut self) {
         for p in self.delegates.values_mut() {
-            p.as_mut().unwrap().clear_pending_commands();
+            let mut d = p.as_mut().unwrap();
+            d.clear_pending_commands();
+            d.clear_pending_sync_result();
         }
     }
 }
