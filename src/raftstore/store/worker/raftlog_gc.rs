@@ -115,9 +115,9 @@ impl Runner {
 
 impl Runnable<Task> for Runner {
     fn run(&mut self, task: Task) {
-        debug!(
-            "[region {}] execute gc log to {}",
-            task.region_id, task.end_idx
+        info!(
+            "[region {}] execute gc log from {} to {}",
+            task.region_id, task.start_idx, task.end_idx
         );
         match self.gc_raft_log(
             task.raft_engine,
@@ -130,7 +130,7 @@ impl Runnable<Task> for Runner {
                 self.report_collected(0);
             }
             Ok(n) => {
-                debug!("[region {}] collected {} log entries", task.region_id, n);
+                info!("[region {}] collected {} log entries", task.region_id, n);
                 self.report_collected(n);
             }
         }
