@@ -757,10 +757,10 @@ impl ApplyDelegate {
 
         // TODO: should we send it to engine server too? It may need sync-log = true.
         // when a peer become leader, it will send an empty entry.
-        let mut state = self.apply_state.clone();
-        state.set_applied_index(index);
-        self.apply_state = state;
-        self.applied_index_term = term;
+        // let mut state = self.apply_state.clone();
+        // state.set_applied_index(index);
+        // self.apply_state = state;
+        // self.applied_index_term = term;
         assert!(term > 0);
         while let Some(mut cmd) = self.pending_cmds.pop_normal(term - 1) {
             // apprently, all the callbacks whose term is less than entry's term are stale.
@@ -913,8 +913,8 @@ impl ApplyDelegate {
         let mut exec_ctx = ctx.exec_ctx.take().unwrap();
         exec_ctx.apply_state.set_applied_index(index);
 
-        self.apply_state = exec_ctx.apply_state;
-        self.applied_index_term = term;
+        // self.apply_state = exec_ctx.apply_state;
+        // self.applied_index_term = term;
 
         let mut req = Rc::try_unwrap(exec_ctx.req).unwrap();
         let mut header = CommandRequestHeader::new();
@@ -2504,6 +2504,7 @@ impl Runner {
                 );
                 write_apply_state(&self.engines, &mut wb, region_id, &apply_state);
                 delegate.apply_state = apply_state.clone();
+                delegate.applied_index_term = applied_index_term;
             }
 
             // Persist apply state and region data if any
