@@ -167,7 +167,7 @@ pub struct ApplyOptions {
 ///   3. receive snapshot from remote raftstore and write it to local storage
 ///   4. apply snapshot
 ///   5. snapshot gc
-pub trait Snapshot: Read + Write + Send {
+pub trait Snapshot: Read + Write + Send + fmt::Debug {
     fn build(
         &mut self,
         snap: &DbSnapshot,
@@ -302,6 +302,17 @@ struct CfFile {
     pub written_size: u64,
     pub checksum: u32,
     pub write_digest: Option<Digest>,
+}
+
+impl fmt::Debug for CfFile {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("CfFile")
+            .field("cf", &self.cf)
+            .field("path", &self.path)
+            .field("tmp_path", &self.tmp_path)
+            .field("clone_path", &self.clone_path)
+            .finish()
+    }
 }
 
 #[derive(Default)]
@@ -825,11 +836,23 @@ fn apply_plain_cf_file<D: CompactBytesFromFileDecoder>(
     Ok(())
 }
 
+impl Snap {
+    fn is_partial(&self ) -> bool {
+        self.cf_files.iter()
+            .any(|cf_file| file_exists(&cf_file.tmp_path))
+            || file_exists(&self.meta_file.tmp_path)
+    }
+}
+
 impl fmt::Debug for Snap {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("Snap")
             .field("key", &self.key)
             .field("display_path", &self.display_path)
+            .field("cf_files", &self.cf_files)
+            .field("exists", &self.exists())
+            .field("partial", &self.is_partial())
+            .field("meta", &self.meta_file.meta)
             .finish()
     }
 }

@@ -326,6 +326,8 @@ impl SnapContext {
         if !s.exists() {
             return Err(box_err!("missing snapshot file {}", s.path()));
         }
+        fail_point!("region_before_apply_snapshot");
+        info!("[region {}] about to apply {:?}", region_id, s);
         check_abort(&abort)?;
         let timer = Instant::now();
         let options = ApplyOptions {
@@ -750,6 +752,8 @@ impl RunnableWithTimer<Task, Event> for Runner {
 
 #[cfg(test)]
 mod tests {
+    extern crate test_util;
+
     use std::io;
     use std::sync::atomic::AtomicUsize;
     use std::sync::{mpsc, Arc};
@@ -770,10 +774,9 @@ mod tests {
     use util::time;
     use util::timer::Timer;
     use util::worker::Worker;
+    use fail;
 
-    use super::Event;
-    use super::PendingDeleteRanges;
-    use super::Task;
+    use super::*;
 
     fn insert_range(
         pending_delete_ranges: &mut PendingDeleteRanges,
@@ -994,5 +997,89 @@ mod tests {
 
         // the last one pending task finished
         assert_eq!(rocksdb::get_cf_num_files_at_level(&db, cf, 0).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_apply_abort() {
+        use self::test_util::init_log_for_test;
+        init_log_for_test().cancel_reset();
+
+        let temp_dir = TempDir::new("test_pending_applies").unwrap();
+        let mut cf_opts = ColumnFamilyOptions::new();
+        cf_opts.set_level_zero_slowdown_writes_trigger(5);
+        cf_opts.set_disable_auto_compactions(true);
+        let cfs_opts = vec![
+            rocksdb::CFOptions::new("default", cf_opts.clone()),
+            rocksdb::CFOptions::new("write", cf_opts.clone()),
+            rocksdb::CFOptions::new("lock", cf_opts.clone()),
+            rocksdb::CFOptions::new("raft", cf_opts.clone()),
+        ];
+        let db = get_test_db_for_regions(&temp_dir, Some(cfs_opts), &[1, 2, 3, 4, 5, 6]).unwrap();
+
+        let snap_dir = TempDir::new("snap_dir").unwrap();
+        let mgr = SnapManager::new(snap_dir.path().to_str().unwrap(), None);
+        let mut worker = Worker::new("snap-manager");
+        let sched = worker.scheduler();
+        let runner = RegionRunner::new(
+            Engines::new(Arc::clone(&db), Arc::clone(&db)),
+            mgr,
+            0,
+            true,
+            Duration::from_secs(0),
+        );
+        let mut timer = Timer::new(1);
+        timer.add_task(Duration::from_millis(100), Event::CheckApply);
+        worker.start_with_timer(runner, timer).unwrap();
+
+        let gen_and_apply_snap = |id: u64| {
+            // construct snapshot
+            let (tx, rx) = mpsc::sync_channel(1);
+            sched
+                .schedule(Task::Gen {
+                    region_id: id,
+                    notifier: tx,
+                })
+                .unwrap();
+            let s1 = rx.recv().unwrap();
+            let data = s1.get_data();
+            let key = SnapKey::from_snap(&s1).unwrap();
+            let mgr = SnapManager::new(snap_dir.path().to_str().unwrap(), None);
+            let mut s2 = mgr.get_snapshot_for_sending(&key).unwrap();
+            let mut s3 = mgr.get_snapshot_for_receiving(&key, &data[..]).unwrap();
+            io::copy(&mut s2, &mut s3).unwrap();
+            s3.save().unwrap();
+
+            // set applying state
+            let wb = WriteBatch::new();
+            let handle = db.cf_handle(CF_RAFT).unwrap();
+            let region_key = keys::region_state_key(id);
+            let mut region_state = db
+                .get_msg_cf::<RegionLocalState>(CF_RAFT, &region_key)
+                .unwrap()
+                .unwrap();
+            region_state.set_state(PeerState::Applying);
+            wb.put_msg_cf(handle, &region_key, &region_state).unwrap();
+            db.write(wb).unwrap();
+
+            // apply snapshot
+            let status = Arc::new(AtomicUsize::new(JOB_STATUS_PENDING));
+            sched
+                .schedule(Task::Apply {
+                    region_id: id,
+                    peer: new_peer(1, 1),
+                    status: status.clone(),
+                })
+                .unwrap();
+            status
+        };
+
+        fail::cfg("region_before_apply_snapshot", "pause").unwrap();
+        let status = gen_and_apply_snap(1);
+        thread::sleep(Duration::from_millis(1000));
+        // Abort snapshot
+        status.store(JOB_STATUS_CANCELLING, Ordering::SeqCst);
+        fail::cfg("region_before_apply_snapshot", "off").unwrap();
+        thread::sleep(Duration::from_millis(1000));
+        // ::std::fs::rename(snap_dir.path(), ::std::path::Path::new("./snap")).unwrap();
     }
 }
