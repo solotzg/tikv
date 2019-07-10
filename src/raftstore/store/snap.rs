@@ -878,7 +878,7 @@ impl Snapshot for Snap {
     }
 
     fn delete(&self) {
-        debug!("deleting {}", self.path());
+        info!("deleting {}", self.path());
         for cf_file in &self.cf_files {
             delete_file_if_exist(&cf_file.clone_path).unwrap();
             if self.hold_tmp_files {
