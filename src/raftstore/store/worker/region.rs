@@ -277,7 +277,10 @@ impl SnapContext {
     ) -> Result<()> {
         info!("[region {}] begin apply snap data", region_id);
         fail_point!("region_apply_snap");
-        check_abort(&abort)?;
+        check_abort(&abort).map_err(|e| {
+            error!("[region {}] abort apply snapshot", region_id);
+            e
+        })?;
         let region_key = keys::region_state_key(region_id);
         let mut region_state: RegionLocalState =
             match box_try!(self.engines.kv.get_msg_cf(CF_RAFT, &region_key)) {
@@ -294,7 +297,10 @@ impl SnapContext {
         let region = region_state.get_region().clone();
         let start_key = keys::enc_start_key(&region);
         let end_key = keys::enc_end_key(&region);
-        check_abort(&abort)?;
+        check_abort(&abort).map_err(|e| {
+            error!("[region {}] abort apply snapshot", region_id);
+            e
+        })?;
         self.cleanup_overlap_ranges(&start_key, &end_key);
         box_try!(util::delete_all_in_range(
             &self.engines.kv,
@@ -302,7 +308,10 @@ impl SnapContext {
             &end_key,
             self.use_delete_range
         ));
-        check_abort(&abort)?;
+        check_abort(&abort).map_err(|e| {
+            error!("[region {}] abort apply snapshot", region_id);
+            e
+        })?;
 
         let state_key = keys::apply_state_key(region_id);
         let apply_state: RaftApplyState =
@@ -328,7 +337,10 @@ impl SnapContext {
         }
         fail_point!("region_before_apply_snapshot");
         info!("[region {}] about to apply {:?}", region_id, s);
-        check_abort(&abort)?;
+        check_abort(&abort).map_err(|e| {
+            error!("[region {}] abort apply snapshot", region_id);
+            e
+        })?;
         let timer = Instant::now();
         let options = ApplyOptions {
             db: Arc::clone(&self.engines.kv),
@@ -760,6 +772,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use fail;
     use kvproto::raft_serverpb::{PeerState, RegionLocalState};
     use raftstore::store::engine::{Mutable, Peekable};
     use raftstore::store::peer_storage::JOB_STATUS_PENDING;
@@ -774,7 +787,6 @@ mod tests {
     use util::time;
     use util::timer::Timer;
     use util::worker::Worker;
-    use fail;
 
     use super::*;
 

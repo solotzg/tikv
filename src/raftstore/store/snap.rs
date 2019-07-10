@@ -837,8 +837,9 @@ fn apply_plain_cf_file<D: CompactBytesFromFileDecoder>(
 }
 
 impl Snap {
-    fn is_partial(&self ) -> bool {
-        self.cf_files.iter()
+    fn is_partial(&self) -> bool {
+        self.cf_files
+            .iter()
             .any(|cf_file| file_exists(&cf_file.tmp_path))
             || file_exists(&self.meta_file.tmp_path)
     }
@@ -901,7 +902,13 @@ impl Snapshot for Snap {
     }
 
     fn delete(&self) {
-        info!("deleting {}", self.path());
+        info!(
+            "[region {}] exist {} partial {} deleting {}",
+            self.key.region_id,
+            self.exists(),
+            self.is_partial(),
+            self.path(),
+        );
         for cf_file in &self.cf_files {
             delete_file_if_exist(&cf_file.clone_path).unwrap();
             if self.hold_tmp_files {
