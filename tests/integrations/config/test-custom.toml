@@ -21,7 +21,6 @@ stack-size = "12MB"
 
 [server]
 addr = "example.com:443"
-engine-addr = "example.com:443"
 advertise-addr = "example.com:443"
 grpc-compression-type = "gzip"
 grpc-concurrency = 123

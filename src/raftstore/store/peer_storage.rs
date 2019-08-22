@@ -1448,7 +1448,7 @@ mod tests {
     use raft::{Error as RaftError, StorageError};
     use raftstore::store::bootstrap;
     use raftstore::store::local_metrics::RaftMetrics;
-    use raftstore::store::util::{new_peer, Engines};
+    use raftstore::store::util::Engines;
     use raftstore::store::worker::RegionRunner;
     use raftstore::store::worker::RegionTask;
     use rocksdb::WriteBatch;
@@ -1474,14 +1474,7 @@ mod tests {
         bootstrap::bootstrap_store(&engines, 1, 1).expect("");
         let region = bootstrap::prepare_bootstrap(&engines, 1, 1, 1).expect("");
         let metrics = Rc::new(RefCell::new(CacheQueryStats::default()));
-        PeerStorage::new(
-            engines,
-            &new_peer(1, 1),
-            &region,
-            sched,
-            "".to_owned(),
-            metrics,
-        ).unwrap()
+        PeerStorage::new(engines, &region, sched, "".to_owned(), metrics).unwrap()
     }
 
     fn new_storage_from_ents(

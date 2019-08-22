@@ -340,7 +340,6 @@ mod tests {
 
     use raftstore::store::engine::*;
     use raftstore::store::keys::*;
-    use raftstore::store::util::new_peer;
     use raftstore::store::{CacheQueryStats, Engines, PeerStorage};
     use raftstore::Result;
     use storage::{CFStatistics, Cursor, Key, ScanMode, ALL_CFS, CF_DEFAULT};
@@ -365,7 +364,6 @@ mod tests {
         let metrics = Rc::new(RefCell::new(CacheQueryStats::default()));
         PeerStorage::new(
             engines,
-            &new_peer(1, 1),
             r,
             worker::dummy_scheduler(),
             "".to_owned(),

@@ -455,34 +455,31 @@ impl<T: Transport, C: PdClient> Store<T, C> {
         );
         box_try!(self.cleanup_sst_worker.start(cleanup_sst_runner));
 
+        let engine_client = self.engines.engine_client();
+        let (cmds_sink, applied_stream) = engine_client.apply_command_batch().unwrap();
         let (cmds_sender, cmds_stream) = futures_mpsc::unbounded();
-        if let Some(engine_client) = self.engines.engine_client() {
-            let (cmds_sink, applied_stream) = engine_client.apply_command_batch().unwrap();
-            // Future of CommandRequestBatch
-            engine_client.spawn(
-                cmds_sink
-                    .sink_map_err(|e| error!("engine client sink error: {:?}", e))
-                    .send_all(
-                        cmds_stream.map_err(|e| error!("engine requests stream error: {:?}", e)),
-                    )
-                    .map(|_| ())
-                    .map_err(|_| ()),
-            );
+        // Future of CommandRequestBatch
+        engine_client.spawn(
+            cmds_sink
+                .sink_map_err(|e| error!("engine client sink error: {:?}", e))
+                .send_all(cmds_stream.map_err(|e| error!("engine requests stream error: {:?}", e)))
+                .map(|_| ())
+                .map_err(|_| ()),
+        );
 
-            // Future of CommandResponseBatch.
-            let apply_scheduler = self.apply_worker.scheduler();
-            engine_client.spawn(
-                applied_stream
-                    .for_each(move |resp_batch| {
-                        // TODO: handle errors.
-                        if let Err(e) = apply_scheduler.schedule(ApplyTask::applied(resp_batch)) {
-                            error!("fail to schedule engine responses, error {:?}", e);
-                        }
-                        Ok(())
-                    })
-                    .map_err(|_| ()),
-            );
-        }
+        // Future of CommandResponseBatch.
+        let apply_scheduler = self.apply_worker.scheduler();
+        engine_client.spawn(
+            applied_stream
+                .for_each(move |resp_batch| {
+                    // TODO: handle errors.
+                    if let Err(e) = apply_scheduler.schedule(ApplyTask::applied(resp_batch)) {
+                        error!("fail to schedule engine responses, error {:?}", e);
+                    }
+                    Ok(())
+                })
+                .map_err(|_| ()),
+        );
 
         let (tx, rx) = mpsc::channel();
         let apply_runner = ApplyRunner::new(

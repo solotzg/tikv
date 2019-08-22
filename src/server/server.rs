@@ -201,12 +201,12 @@ mod tests {
     use std::sync::*;
     use std::time::Duration;
 
+    use super::*;
+
     use super::super::resolve::{Callback as ResolveCallback, StoreAddrResolver};
     use super::super::transport::RaftStoreRouter;
     use super::super::{Config, Result};
-    use super::*;
     use coprocessor;
-    use grpc;
     use kvproto::raft_serverpb::RaftMessage;
     use raftstore::store::transport::Transport;
     use raftstore::store::Msg as StoreMsg;
@@ -293,11 +293,10 @@ mod tests {
             || || coprocessor::ReadPoolContext::new(pd_worker.scheduler()),
         );
         let cop = coprocessor::Endpoint::new(&cfg, storage.get_engine(), cop_read_pool);
-        let env = Arc::new(grpc::Environment::new(1));
+
         let addr = Arc::new(Mutex::new(None));
         let mut server = Server::new(
             &cfg,
-            env,
             &security_mgr,
             storage,
             cop,

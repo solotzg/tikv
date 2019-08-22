@@ -2675,7 +2675,6 @@ mod tests {
     use std::sync::*;
     use std::time::*;
 
-    use futures;
     use kvproto::metapb::{self, RegionEpoch};
     use kvproto::raft_cmdpb::*;
     use protobuf::Message;
@@ -2684,7 +2683,6 @@ mod tests {
     use raftstore::store::peer_storage::RAFT_INIT_LOG_INDEX;
     use raftstore::store::util::{new_learner_peer, new_peer};
     use rocksdb::{Writable, WriteBatch, DB};
-    use storage::CF_LOCK;
     use tempdir::TempDir;
 
     use super::*;
@@ -2714,10 +2712,9 @@ mod tests {
         importer: Arc<SSTImporter>,
         tx: Sender<TaskRes>,
     ) -> Runner {
-        let (sender, _rx) = futures::sync::mpsc::unbounded();
         Runner {
             engines,
-            cmds_sender: sender,
+            cmds_sender: None,
             host,
             importer,
             delegates: HashMap::default(),
@@ -3092,7 +3089,7 @@ mod tests {
             .register_query_observer(1, Box::new(obs.clone()));
         let mut core = ApplyContextCore::new(&host, &importer).use_delete_range(true);
         let mut apply_ctx = ApplyContext::new(&mut core, &mut delegates);
-        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry].into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry]);
         apply_ctx.write_to_db(&engines.kv);
         assert!(apply_ctx.core.apply_res.last().unwrap().exec_res.is_empty());
         let resp = rx.try_recv().unwrap();
@@ -3115,7 +3112,7 @@ mod tests {
             .put_cf(CF_LOCK, b"k1", b"v1")
             .epoch(1, 3)
             .build();
-        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry].into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry]);
         apply_ctx.write_to_db(&engines.kv);
         let lock_handle = engines.kv.cf_handle(CF_LOCK).unwrap();
         assert_eq!(
@@ -3137,7 +3134,7 @@ mod tests {
             .epoch(1, 1)
             .capture_resp(&mut delegate, tx.clone())
             .build();
-        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry].into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry]);
         apply_ctx.write_to_db(&engines.kv);
         let resp = rx.try_recv().unwrap();
         assert!(resp.get_header().get_error().has_stale_epoch());
@@ -3150,7 +3147,7 @@ mod tests {
             .epoch(1, 3)
             .capture_resp(&mut delegate, tx.clone())
             .build();
-        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry].into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry]);
         apply_ctx.write_to_db(&engines.kv);
         let resp = rx.try_recv().unwrap();
         assert!(resp.get_header().get_error().has_key_not_in_region());
@@ -3172,7 +3169,7 @@ mod tests {
         let lock_written_bytes = delegate.metrics.lock_cf_written_bytes;
         let delete_keys_hint = delegate.metrics.delete_keys_hint;
         let size_diff_hint = delegate.metrics.size_diff_hint;
-        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry].into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![put_entry]);
         apply_ctx.write_to_db(&engines.kv);
         let resp = rx.try_recv().unwrap();
         // stale command should be cleared.
@@ -3192,7 +3189,7 @@ mod tests {
             .epoch(1, 3)
             .capture_resp(&mut delegate, tx.clone())
             .build();
-        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![delete_entry].into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![delete_entry]);
         apply_ctx.write_to_db(&engines.kv);
         let resp = rx.try_recv().unwrap();
         assert!(resp.get_header().get_error().has_key_not_in_region());
@@ -3202,7 +3199,7 @@ mod tests {
             .epoch(1, 3)
             .capture_resp(&mut delegate, tx.clone())
             .build();
-        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![delete_range_entry].into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![delete_range_entry]);
         apply_ctx.write_to_db(&engines.kv);
         let resp = rx.try_recv().unwrap();
         assert!(resp.get_header().get_error().has_key_not_in_region());
@@ -3215,7 +3212,7 @@ mod tests {
             .epoch(1, 3)
             .capture_resp(&mut delegate, tx.clone())
             .build();
-        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![delete_range_entry].into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, vec![delete_range_entry]);
         apply_ctx.write_to_db(&engines.kv);
         let resp = rx.try_recv().unwrap();
         assert!(!resp.get_header().has_error(), "{:?}", resp);
@@ -3256,7 +3253,7 @@ mod tests {
             .epoch(0, 3)
             .build();
         let entries = vec![put_ok, ingest_ok, ingest_stale_epoch];
-        delegate.handle_raft_committed_entries(&mut apply_ctx, entries.into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, entries);
         apply_ctx.write_to_db(&engines.kv);
         let resp = rx.try_recv().unwrap();
         assert!(!resp.get_header().has_error(), "{:?}", resp);
@@ -3277,7 +3274,7 @@ mod tests {
                 .build();
             entries.push(put_entry);
         }
-        delegate.handle_raft_committed_entries(&mut apply_ctx, entries.into());
+        delegate.handle_raft_committed_entries(&mut apply_ctx, entries);
         apply_ctx.write_to_db(&engines.kv);
         for _ in 0..WRITE_BATCH_MAX_KEYS {
             rx.try_recv().unwrap();
@@ -3495,7 +3492,7 @@ mod tests {
                 .epoch(epoch.get_conf_ver(), epoch.get_version())
                 .capture_resp(delegate, tx.clone())
                 .build();
-            delegate.handle_raft_committed_entries(&mut apply_ctx, vec![split].into());
+            delegate.handle_raft_committed_entries(&mut apply_ctx, vec![split]);
             apply_ctx.write_to_db(&engines.kv);
             index_id += 1;
             rx.try_recv().unwrap()
