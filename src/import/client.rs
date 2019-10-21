@@ -24,13 +24,14 @@ use kvproto::import_sstpb_grpc::*;
 use kvproto::kvrpcpb::*;
 use kvproto::tikvpb_grpc::*;
 
-use pd::{Config as PdConfig, PdClient, RegionInfo, RpcClient};
+use pd::{take_peer_address, Config as PdConfig, PdClient, RegionInfo, RpcClient};
 use storage::types::Key;
 use util::collections::{HashMap, HashMapEntry};
 use util::security::SecurityManager;
 
 use super::common::*;
 use super::{Error, Result};
+use std::borrow::ToOwned;
 
 pub trait ImportClient: Send + Sync + Clone + 'static {
     fn get_region(&self, _: &[u8]) -> Result<RegionInfo> {
@@ -90,9 +91,10 @@ impl Client {
         match channels.entry(store_id) {
             HashMapEntry::Occupied(e) => Ok(e.get().clone()),
             HashMapEntry::Vacant(e) => {
-                let store = self.pd.get_store(store_id)?;
+                let mut store = self.pd.get_store(store_id)?;
                 let builder = ChannelBuilder::new(Arc::clone(&self.env));
-                let channel = builder.connect(store.get_address());
+                let addr = take_peer_address(&mut store);
+                let channel = builder.connect(&addr);
                 Ok(e.insert(channel).clone())
             }
         }
