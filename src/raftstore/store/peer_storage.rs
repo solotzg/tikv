@@ -83,34 +83,6 @@ impl PartialEq for SnapState {
     }
 }
 
-// Discard all log entries prior to compact_index. We must guarantee
-// that the compact_index is not greater than applied index.
-pub fn compact_raft_log(
-    tag: &str,
-    state: &mut RaftApplyState,
-    compact_index: u64,
-    compact_term: u64,
-) -> Result<()> {
-    debug!("{} compact log entries to prior to {}", tag, compact_index);
-
-    if compact_index <= state.get_truncated_state().get_index() {
-        return Err(box_err!("try to truncate compacted entries"));
-    } else if compact_index > state.get_applied_index() {
-        return Err(box_err!(
-            "compact index {} > applied index {}",
-            compact_index,
-            state.get_applied_index()
-        ));
-    }
-
-    // we don't actually delete the logs now, we add an async task to do it.
-
-    state.mut_truncated_state().set_index(compact_index);
-    state.mut_truncated_state().set_term(compact_term);
-
-    Ok(())
-}
-
 #[inline]
 pub fn first_index(state: &RaftApplyState) -> u64 {
     state.get_truncated_state().get_index() + 1
@@ -1464,6 +1436,7 @@ mod tests {
     use util::worker::{Scheduler, Worker};
 
     use super::*;
+    use kvproto::metapb::Peer;
 
     fn new_storage(sched: Scheduler<RegionTask>, path: &TempDir) -> PeerStorage {
         let kv_db = Arc::new(new_engine(path.path().to_str().unwrap(), ALL_CFS, None).unwrap());
@@ -1474,7 +1447,14 @@ mod tests {
         bootstrap::bootstrap_store(&engines, 1, 1).expect("");
         let region = bootstrap::prepare_bootstrap(&engines, 1, 1, 1).expect("");
         let metrics = Rc::new(RefCell::new(CacheQueryStats::default()));
-        PeerStorage::new(engines, &region, sched, "".to_owned(), metrics).unwrap()
+        PeerStorage::new(
+            engines,
+            &Peer::new(),
+            &region,
+            sched,
+            "".to_owned(),
+            metrics,
+        ).unwrap()
     }
 
     fn new_storage_from_ents(
@@ -1539,6 +1519,34 @@ mod tests {
 
     fn size_of<T: protobuf::Message>(m: &T) -> u32 {
         m.compute_size()
+    }
+
+    // Discard all log entries prior to compact_index. We must guarantee
+    // that the compact_index is not greater than applied index.
+    pub fn compact_raft_log(
+        tag: &str,
+        state: &mut RaftApplyState,
+        compact_index: u64,
+        compact_term: u64,
+    ) -> Result<()> {
+        debug!("{} compact log entries to prior to {}", tag, compact_index);
+
+        if compact_index <= state.get_truncated_state().get_index() {
+            return Err(box_err!("try to truncate compacted entries"));
+        } else if compact_index > state.get_applied_index() {
+            return Err(box_err!(
+                "compact index {} > applied index {}",
+                compact_index,
+                state.get_applied_index()
+            ));
+        }
+
+        // we don't actually delete the logs now, we add an async task to do it.
+
+        state.mut_truncated_state().set_index(compact_index);
+        state.mut_truncated_state().set_term(compact_term);
+
+        Ok(())
     }
 
     #[test]
@@ -1731,6 +1739,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_storage_create_snapshot() {
         let ents = vec![new_entry(3, 3), new_entry(4, 4), new_entry(5, 5)];
         let mut cs = ConfState::new();
@@ -2016,6 +2025,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_storage_apply_snapshot() {
         let ents = vec![
             new_entry(3, 3),
