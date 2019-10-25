@@ -46,10 +46,8 @@ use util::setup::*;
 use util::signal_handler;
 
 use std::fs::File;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::process;
-use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -211,8 +209,7 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
             .name_prefix(thd_name!("grpc-server"))
             .build(),
     );
-    SocketAddr::from_str(&server_cfg.engine_addr)
-        .unwrap_or_else(|e| fatal!("failed to parser engine server address: {:?}", e));
+
     engines.set_engine_client_cfg(
         env.clone(),
         security_mgr.clone(),
