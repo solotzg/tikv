@@ -1,8 +1,8 @@
 #[cfg(unix)]
-pub(crate) mod profiling;
+pub mod profiling;
 #[macro_use]
-pub(crate) mod setup;
-pub(crate) mod signal_handler;
+pub mod setup;
+pub mod signal_handler;
 
 /// Returns the tikv version information.
 pub fn tikv_version_info() -> String {

@@ -32,6 +32,9 @@
 // Currently this raises some false positives, so we allow it:
 // https://github.com/rust-lang-nursery/rust-clippy/issues/2638
 #![cfg_attr(feature = "cargo-clippy", allow(nonminimal_bool))]
+#![feature(slice_patterns)]
+#![feature(proc_macro_non_items)]
+#![feature(extern_prelude)]
 
 extern crate alloc;
 extern crate backtrace;
@@ -136,3 +139,12 @@ pub mod server;
 pub mod storage;
 
 pub use storage::Storage;
+
+extern crate clap;
+#[cfg(feature = "mem-profiling")]
+extern crate jemallocator;
+#[cfg(unix)]
+extern crate nix;
+#[cfg(unix)]
+extern crate signal;
+pub mod tiflash_engine;

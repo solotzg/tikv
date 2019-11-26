@@ -11,39 +11,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![feature(slice_patterns)]
-#![feature(proc_macro_non_items)]
-
-extern crate chrono;
-extern crate clap;
-extern crate fs2;
-#[cfg(feature = "mem-profiling")]
-extern crate jemallocator;
-extern crate libc;
-#[macro_use]
-extern crate log;
-extern crate grpcio as grpc;
-#[cfg(unix)]
-extern crate nix;
-extern crate prometheus;
-extern crate rocksdb;
-extern crate serde_json;
-#[cfg(unix)]
-extern crate signal;
-extern crate slog;
-extern crate slog_async;
-extern crate slog_scope;
-extern crate slog_stdlog;
-extern crate slog_term;
-#[macro_use]
-extern crate tikv;
-extern crate toml;
-
 #[cfg(unix)]
 #[macro_use]
-mod util;
-use util::setup::*;
-use util::signal_handler;
+mod tiflash_util;
+use tiflash_engine::tiflash_util::setup::*;
+use tiflash_engine::tiflash_util::signal_handler;
 
 use std::fs::File;
 use std::path::Path;
@@ -57,23 +29,23 @@ use clap::{App, Arg};
 use fs2::FileExt;
 use grpc::EnvBuilder;
 
-use tikv::config::{check_and_persist_critical_config, TiKvConfig};
-use tikv::coprocessor;
-use tikv::import::{ImportSSTService, SSTImporter};
-use tikv::pd::{PdClient, RpcClient};
-use tikv::raftstore::coprocessor::CoprocessorHost;
-use tikv::raftstore::store::{self, new_compaction_listener, Engines, SnapManagerBuilder};
-use tikv::server::readpool::ReadPool;
-use tikv::server::resolve;
-use tikv::server::transport::ServerRaftStoreRouter;
-use tikv::server::{create_raft_storage, Node, Server, DEFAULT_CLUSTER_ID};
-use tikv::storage::{self, DEFAULT_ROCKSDB_SUB_DIR};
-use tikv::util::rocksdb::metrics_flusher::{MetricsFlusher, DEFAULT_FLUSHER_INTERVAL};
-use tikv::util::security::SecurityManager;
-use tikv::util::time::Monitor;
-use tikv::util::transport::SendCh;
-use tikv::util::worker::{Builder, FutureWorker};
-use tikv::util::{self as tikv_util, rocksdb as rocksdb_util};
+use config::{check_and_persist_critical_config, TiKvConfig};
+use coprocessor;
+use import::{ImportSSTService, SSTImporter};
+use pd::{PdClient, RpcClient};
+use raftstore::coprocessor::CoprocessorHost;
+use raftstore::store::{self, new_compaction_listener, Engines, SnapManagerBuilder};
+use server::readpool::ReadPool;
+use server::resolve;
+use server::transport::ServerRaftStoreRouter;
+use server::{create_raft_storage, Node, Server, DEFAULT_CLUSTER_ID};
+use storage::{self, DEFAULT_ROCKSDB_SUB_DIR};
+use util::rocksdb::metrics_flusher::{MetricsFlusher, DEFAULT_FLUSHER_INTERVAL};
+use util::security::SecurityManager;
+use util::time::Monitor;
+use util::transport::SendCh;
+use util::worker::{Builder, FutureWorker};
+use util::{self as tikv_util, rocksdb as rocksdb_util};
 
 const RESERVED_OPEN_FDS: u64 = 1000;
 
@@ -278,9 +250,10 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
     }
 }
 
-fn main() {
+#[no_mangle]
+pub extern "C" fn run() {
     let matches = App::new("TiKV")
-        .long_version(util::tikv_version_info().as_ref())
+        .long_version(tiflash_util::tikv_version_info().as_ref())
         .author("TiKV Org.")
         .about("A Distributed transactional key-value database powered by Rust and Raft")
         .arg(
@@ -403,7 +376,7 @@ fn main() {
     tikv_util::set_panic_hook(false, &config.storage.data_dir);
 
     // Print version information.
-    util::print_tikv_info();
+    tiflash_util::print_tikv_info();
 
     config.compatible_adjust();
     if let Err(e) = config.validate() {
@@ -436,4 +409,9 @@ fn main() {
 
     let _m = Monitor::default();
     run_raft_server(pd_client, &config, security_mgr);
+}
+
+#[no_mangle]
+pub extern "C" fn hello_world() {
+    println!("hello world!");
 }

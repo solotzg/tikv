@@ -12,35 +12,9 @@ mem-profiling = ["jemallocator"]
 no-fail = ["fail/no_fail"]
 
 [lib]
-name = "tikv"
-
-[[bin]]
-name = "tikv-server"
-
-[[bin]]
-name = "tikv-ctl"
-
-[[bin]]
-name = "tikv-importer"
-
-[[bench]]
-name = "raftstore"
-harness = false
-path = "benches/raftstore/mod.rs"
-
-[[bench]]
-name = "coprocessor_executors"
-harness = false
-path = "benches/coprocessor_executors/mod.rs"
-
-[[bench]]
-name = "engines"
-harness = false
-path = "benches/engines/mod.rs"
-
-[[bench]]
-name = "misc"
-path = "benches/misc/mod.rs"
+name = "tiflash_engine"
+#crate-type =["cdylib"]
+crate-type =["staticlib"]
 
 [dependencies]
 hashbrown = {version = "0.1", features = ["serde"]}
