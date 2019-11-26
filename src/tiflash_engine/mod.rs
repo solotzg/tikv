@@ -32,6 +32,7 @@ use grpc::EnvBuilder;
 use config::{check_and_persist_critical_config, TiKvConfig};
 use coprocessor;
 use import::{ImportSSTService, SSTImporter};
+use libc::{c_char, c_int};
 use pd::{PdClient, RpcClient};
 use raftstore::coprocessor::CoprocessorHost;
 use raftstore::store::{self, new_compaction_listener, Engines, SnapManagerBuilder};
@@ -39,6 +40,7 @@ use server::readpool::ReadPool;
 use server::resolve;
 use server::transport::ServerRaftStoreRouter;
 use server::{create_raft_storage, Node, Server, DEFAULT_CLUSTER_ID};
+use std::ffi::CStr;
 use storage::{self, DEFAULT_ROCKSDB_SUB_DIR};
 use util::rocksdb::metrics_flusher::{MetricsFlusher, DEFAULT_FLUSHER_INTERVAL};
 use util::security::SecurityManager;
@@ -251,7 +253,14 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
 }
 
 #[no_mangle]
-pub extern "C" fn run() {
+pub unsafe extern "C" fn run(argc: c_int, argv: *const *const c_char) {
+    let mut args = vec![];
+
+    for i in 0..argc {
+        let raw = CStr::from_ptr(*argv.offset(i as isize));
+        args.push(raw.to_str().unwrap());
+    }
+
     let matches = App::new("TiKV")
         .long_version(tiflash_util::tikv_version_info().as_ref())
         .author("TiKV Org.")
@@ -351,7 +360,7 @@ pub extern "C" fn run() {
                 .long("print-sample-config")
                 .help("Print a sample config to stdout"),
         )
-        .get_matches();
+        .get_matches_from(args);
 
     if matches.is_present("print-sample-config") {
         let config = TiKvConfig::default();
