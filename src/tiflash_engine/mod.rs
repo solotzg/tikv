@@ -253,7 +253,7 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn run(argc: c_int, argv: *const *const c_char) {
+pub unsafe extern "C" fn run_tiflash_proxy(argc: c_int, argv: *const *const c_char) {
     let mut args = vec![];
 
     for i in 0..argc {
@@ -261,10 +261,10 @@ pub unsafe extern "C" fn run(argc: c_int, argv: *const *const c_char) {
         args.push(raw.to_str().unwrap());
     }
 
-    let matches = App::new("TiKV")
+    let matches = App::new("TiFlash Proxy")
         .long_version(tiflash_util::tikv_version_info().as_ref())
-        .author("TiKV Org.")
-        .about("A Distributed transactional key-value database powered by Rust and Raft")
+        .author("PingCAP")
+        .about("Proxy for TiFLash to connect TiKV cluster.")
         .arg(
             Arg::with_name("config")
                 .short("C")
