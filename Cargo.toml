@@ -13,8 +13,8 @@ no-fail = ["fail/no_fail"]
 
 [lib]
 name = "tiflash_proxy"
-#crate-type =["cdylib"]
-crate-type =["staticlib"]
+crate-type =["cdylib"]
+#crate-type =["staticlib"]
 
 [dependencies]
 hashbrown = {version = "0.1", features = ["serde"]}
