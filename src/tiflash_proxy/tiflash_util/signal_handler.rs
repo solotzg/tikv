@@ -14,7 +14,7 @@
 #[cfg(unix)]
 mod imp {
     use libc::c_int;
-    use tiflash_engine::tiflash_util::profiling;
+    use tiflash_proxy::tiflash_util::profiling;
 
     use raftstore::store::Engines;
     use util::{metrics, rocksdb_stats};

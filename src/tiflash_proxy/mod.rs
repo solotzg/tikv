@@ -14,8 +14,8 @@
 #[cfg(unix)]
 #[macro_use]
 mod tiflash_util;
-use tiflash_engine::tiflash_util::setup::*;
-use tiflash_engine::tiflash_util::signal_handler;
+use tiflash_proxy::tiflash_util::setup::*;
+use tiflash_proxy::tiflash_util::signal_handler;
 
 use std::fs::File;
 use std::path::Path;

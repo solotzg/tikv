@@ -147,4 +147,4 @@ extern crate jemallocator;
 extern crate nix;
 #[cfg(unix)]
 extern crate signal;
-pub mod tiflash_engine;
+pub mod tiflash_proxy;
