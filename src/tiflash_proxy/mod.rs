@@ -253,6 +253,11 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn print_tiflash_proxy_version() {
+    println!("{}", tiflash_util::tikv_version_info());
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn run_tiflash_proxy(argc: c_int, argv: *const *const c_char) {
     let mut args = vec![];
 
