@@ -1401,7 +1401,7 @@ impl Peer {
             return false;
         }
 
-        // If last peer is the leader of the region before split, it's intuitional for
+        // If last peer is the leader of the region before split, it's intuitive for
         // it to become the leader of new split region.
         let _ = self.raft_group.campaign();
         self.mark_to_be_checked(pending_raft_groups);

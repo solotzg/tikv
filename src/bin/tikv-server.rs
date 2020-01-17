@@ -397,7 +397,7 @@ fn main() {
     }
 
     // Sets the global logger ASAP.
-    // It is okay to use the config w/o `validata()`,
+    // It is okay to use the config w/o `validate()`,
     // because `initial_logger()` handles various conditions.
     initial_logger(&config).cancel_reset();
     tikv_util::set_panic_hook(false, &config.storage.data_dir);
