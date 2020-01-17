@@ -1,8 +1,8 @@
 #[cfg(unix)]
-pub(crate) mod profiling;
+pub mod profiling;
 #[macro_use]
-pub(crate) mod setup;
-pub(crate) mod signal_handler;
+pub mod setup;
+pub mod signal_handler;
 
 /// Returns the tikv version information.
 pub fn tikv_version_info() -> String {
@@ -24,5 +24,5 @@ pub fn tikv_version_info() -> String {
 /// Prints the tikv version information to the standard output.
 #[allow(dead_code)]
 pub fn print_tikv_info() {
-    info!("Welcome to TiKV. {}", tikv_version_info());
+    info!("Welcome to TiFlash Proxy. {}", tikv_version_info());
 }

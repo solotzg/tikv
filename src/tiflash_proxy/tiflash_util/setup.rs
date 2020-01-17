@@ -19,10 +19,10 @@ use chrono;
 use clap::ArgMatches;
 use slog_scope::GlobalLoggerGuard;
 
-use tikv::config::{MetricConfig, TiKvConfig};
-use tikv::server::config::{DEFAULT_ENGINE_LABEL_KEY, DEFAULT_ENGINE_LABEL_VALUE};
-use tikv::util::collections::HashMap;
-use tikv::util::{self, logger};
+use config::{MetricConfig, TiKvConfig};
+use server::config::{DEFAULT_ENGINE_LABEL_KEY, DEFAULT_ENGINE_LABEL_VALUE};
+use util::collections::HashMap;
+use util::{self, logger};
 
 // A workaround for checking if log is initialized.
 pub static LOG_INITIALIZED: AtomicBool = ATOMIC_BOOL_INIT;

@@ -14,11 +14,10 @@
 #[cfg(unix)]
 mod imp {
     use libc::c_int;
+    use tiflash_proxy::tiflash_util::profiling;
 
-    use util::profiling;
-
-    use tikv::raftstore::store::Engines;
-    use tikv::util::{metrics, rocksdb_stats};
+    use raftstore::store::Engines;
+    use util::{metrics, rocksdb_stats};
 
     #[allow(dead_code)]
     pub fn handle_signal(engines: Option<Engines>) {
@@ -49,7 +48,7 @@ mod imp {
 
 #[cfg(not(unix))]
 mod imp {
-    use tikv::raftstore::store::Engines;
+    use raftstore::store::Engines;
 
     pub fn handle_signal(_: Option<Engines>) {}
 }
