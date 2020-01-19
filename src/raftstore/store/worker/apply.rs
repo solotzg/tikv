@@ -228,7 +228,7 @@ impl ApplyCallback {
     }
 }
 
-/// Stash keeps the informations that are needed to restore an appropriate
+/// Stash keeps the information that is needed to restore an appropriate
 /// applying context for the `ApplyContextCore::stash` call.
 struct Stash {
     region: Option<Region>,
@@ -361,7 +361,7 @@ impl<'a> ApplyContextCore<'a> {
         }
     }
 
-    /// Finish applys for the delegate.
+    /// Finish applies for the delegate.
     #[allow(dead_code)]
     pub fn finish_for(&mut self, delegate: &mut ApplyDelegate, results: Vec<ExecResult>) {
         if !delegate.pending_remove {
@@ -548,8 +548,13 @@ struct PendingSyncResult {
 
 impl Drop for PendingSyncResult {
     fn drop(&mut self) {
-        assert!(self.res.is_none(), "{:?}", self.res);
-        assert!(self.wb.is_none());
+        match self.res {
+            Some(ExecResult::PrepareMerge { .. }) => {}
+            _ => {
+                assert!(self.res.is_none(), "{:?}", self.res);
+                assert!(self.wb.is_none());
+            }
+        }
     }
 }
 
@@ -684,7 +689,6 @@ impl ApplyDelegate {
             return;
         }
 
-        // TODO: we should set self.pending_apply_entries to Some() before return.
         apply_ctx.prepare_for(self);
         apply_ctx.committed_count += committed_entries.len();
         // If we send multiple ConfChange commands, only first one will be proposed correctly,
@@ -720,6 +724,10 @@ impl ApplyDelegate {
 
             if self.pending_sync_result.is_some() {
                 // It needs to wait engine server to apply sync-log request,
+                debug!(
+                    "need wait engine to apply sync-log {}",
+                    self.pending_sync_result.as_mut().unwrap().index
+                );
                 break;
             }
         }
@@ -1108,9 +1116,6 @@ impl ApplyDelegate {
             AdminCmdType::TransferLeader => Err(box_err!("transfer leader won't exec")),
             AdminCmdType::ComputeHash => self.exec_compute_hash(ctx, request),
             AdminCmdType::VerifyHash => self.exec_verify_hash(ctx, request),
-            // TODO: is it backward compatible to add new cmd_type?
-
-            // TODO: consider region merge.
             AdminCmdType::PrepareMerge => self.exec_prepare_merge(ctx, request),
             AdminCmdType::CommitMerge => self.exec_commit_merge(ctx, request),
             AdminCmdType::RollbackMerge => self.exec_rollback_merge(ctx, request),
@@ -1569,7 +1574,6 @@ impl ApplyDelegate {
         delegate.handle_raft_committed_entries(ctx, entries.into());
         *exist_region = delegate.region.clone();
         *ctx.delegates.get_mut(&region_id).unwrap() = Some(delegate);
-        ctx.apply_res.last_mut().unwrap().merged = true;
         ctx.restore_stash(stash);
     }
 
@@ -1747,7 +1751,7 @@ impl ApplyDelegate {
                 self.tag,
                 req.get_compact_log()
             );
-            // old format compact log command, safe to ignore.
+            // should not recieve old format compact log command.
             panic!("command format is outdated, please upgrade leader.");
         }
 
@@ -2172,7 +2176,7 @@ impl Task {
 impl Display for Task {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match *self {
-            Task::Applies(ref a) => write!(f, "async applys count {}", a.vec.len()),
+            Task::Applies(ref a) => write!(f, "async applies count {}", a.vec.len()),
             Task::Proposals(ref p) => write!(f, "region proposal count {}", p.len()),
             Task::Registration(ref r) => {
                 write!(f, "[region {}] Reg {:?}", r.region.get_id(), r.apply_state)
@@ -2215,12 +2219,12 @@ pub enum TaskRes {
 }
 
 enum ApplyTask {
-    Applys(Vec<Apply>),
+    Applies(Vec<Apply>),
     // Kick apply delegate to apply pending commands.
     Kick(u64),
 }
 
-// TODO: use threadpool to do task concurrently
+// TODO: use thread pool to do task concurrently
 pub struct Runner {
     engines: Engines,
     cmds_sender: UnboundedSender<(CommandRequestBatch, WriteFlags)>,
@@ -2262,8 +2266,8 @@ impl Runner {
     fn handle_applies(&mut self, task: ApplyTask) {
         let t = SlowTimer::new();
 
-        let applys = match task {
-            ApplyTask::Applys(applys) => applys,
+        let applies = match task {
+            ApplyTask::Applies(applies) => applies,
             ApplyTask::Kick(region_id) => match self.delegates.get_mut(&region_id) {
                 None => {
                     error!("[region {}] is missing", region_id);
@@ -2288,10 +2292,10 @@ impl Runner {
 
         let (apply_cmds, pending_destroy_tasks, mut cbs, mut merged_regions, committed_count) = {
             let mut core = ApplyContextCore::new(self.host.as_ref(), self.importer.as_ref())
-                .apply_capacity(applys.len())
+                .apply_capacity(applies.len())
                 .use_delete_range(self.use_delete_range)
                 .enable_sync_log(self.sync_log);
-            for apply in applys {
+            for apply in applies {
                 if core.merged_regions.contains(&apply.region_id) {
                     continue;
                 }
@@ -2335,7 +2339,6 @@ impl Runner {
         if !apply_cmds.is_empty() {
             let mut batch = CommandRequestBatch::new();
             batch.set_requests(apply_cmds.into());
-            // TODO: handle errors
             self.cmds_sender
                 .unbounded_send((batch, WriteFlags::default()))
                 .unwrap();
@@ -2414,6 +2417,10 @@ impl Runner {
             if delegate.pending_sync_result.is_some() {
                 let (pending_destroy, pending_index) = {
                     let pending_sync_result = delegate.pending_sync_result.as_ref().unwrap();
+                    debug!(
+                        "[region {}] pending sync result {:?}",
+                        region_id, pending_sync_result
+                    );
                     (
                         pending_sync_result.pending_destroy,
                         pending_sync_result.index,
@@ -2431,6 +2438,7 @@ impl Runner {
                 } else if pending_index <= apply_state.get_applied_index() {
                     // Engine server has persist apply results.
                     let mut pending = delegate.pending_sync_result.take().unwrap();
+                    debug!("persisted, try take {:?}", pending.res);
                     match pending.res.take() {
                         // Drop consistency check results, because we have checked them in
                         // engine servers.
@@ -2486,7 +2494,7 @@ impl Runner {
                 exec_res,
                 metrics: Default::default(),
                 applied_index_term,
-                merged: false, // TODO: consider region merge.
+                merged: false,
             });
 
             // To apply pending entries as soon as possible, we should kick it.
@@ -2605,7 +2613,7 @@ impl Runnable<Task> for Runner {
             Task::Applies(a) => {
                 let elapsed = duration_to_sec(a.start.elapsed());
                 APPLY_TASK_WAIT_TIME_HISTOGRAM.observe(elapsed);
-                self.handle_applies(ApplyTask::Applys(a.vec));
+                self.handle_applies(ApplyTask::Applies(a.vec));
             }
             Task::Applied(resp_batch) => self.handle_applied_command_batch(resp_batch),
             Task::Proposals(props) => self.handle_proposals(props),

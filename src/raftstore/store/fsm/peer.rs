@@ -1314,7 +1314,7 @@ impl<T: Transport, C: PdClient> Store<T, C> {
             request
         };
         // Please note that, here assumes that the unit of network isolation is store rather than
-        // peer. So a quorum stores of souce region should also be the quorum stores of target
+        // peer. So a quorum stores of source region should also be the quorum stores of target
         // region. Otherwise we need to enable proposal forwarding.
         self.propose_raft_command(req, Callback::None);
         Ok(())
@@ -1385,7 +1385,6 @@ impl<T: Transport, C: PdClient> Store<T, C> {
     fn on_ready_commit_merge(&mut self, region: metapb::Region, source: metapb::Region) {
         let source_peer = {
             let peer = self.region_peers.get_mut(&source.get_id()).unwrap();
-            assert!(peer.pending_merge_state.is_some());
             peer.peer.clone()
         };
         self.destroy_peer(source.get_id(), source_peer, true);
