@@ -549,9 +549,7 @@ struct PendingSyncResult {
 impl Drop for PendingSyncResult {
     fn drop(&mut self) {
         match self.res {
-            Some(ExecResult::PrepareMerge { .. }) => {
-                info!("clear prepare merge result");
-            }
+            Some(ExecResult::PrepareMerge { .. }) => {}
             _ => {
                 assert!(self.res.is_none(), "{:?}", self.res);
                 assert!(self.wb.is_none());
@@ -687,7 +685,6 @@ impl ApplyDelegate {
         if self.pending_sync_result.is_some() {
             // We have sent a sync-log request to engine server and does not receive
             // any response, so we wait.
-            info!("some pending apply entries here {:?}", committed_entries);
             self.pending_apply_entries = Some(committed_entries);
             return;
         }
