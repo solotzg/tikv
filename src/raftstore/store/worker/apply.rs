@@ -724,7 +724,7 @@ impl ApplyDelegate {
 
             if self.pending_sync_result.is_some() {
                 // It needs to wait engine server to apply sync-log request,
-                info!(
+                debug!(
                     "need wait engine to apply sync-log {}",
                     self.pending_sync_result.as_mut().unwrap().index
                 );
@@ -2337,12 +2337,6 @@ impl Runner {
         };
 
         if !apply_cmds.is_empty() {
-            if (&apply_cmds[0]).admin_request.is_some() {
-                info!(
-                    "sending command {:?}",
-                    (&apply_cmds[0]).get_admin_request().cmd_type
-                );
-            }
             let mut batch = CommandRequestBatch::new();
             batch.set_requests(apply_cmds.into());
             self.cmds_sender
@@ -2423,7 +2417,7 @@ impl Runner {
             if delegate.pending_sync_result.is_some() {
                 let (pending_destroy, pending_index) = {
                     let pending_sync_result = delegate.pending_sync_result.as_ref().unwrap();
-                    info!(
+                    debug!(
                         "[region {}] pending sync result {:?}",
                         region_id, pending_sync_result
                     );
@@ -2444,7 +2438,7 @@ impl Runner {
                 } else if pending_index <= apply_state.get_applied_index() {
                     // Engine server has persist apply results.
                     let mut pending = delegate.pending_sync_result.take().unwrap();
-                    info!("persisted, try take {:?}", pending.res);
+                    debug!("persisted, try take {:?}", pending.res);
                     match pending.res.take() {
                         // Drop consistency check results, because we have checked them in
                         // engine servers.
