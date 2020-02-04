@@ -26,8 +26,7 @@ use engine::{CfName, CF_DEFAULT, CF_LOCK, CF_WRITE};
 use futures_executor::block_on;
 use futures_util::io::{AllowStdIo, AsyncWriteExt};
 use kvproto::metapb::Region;
-use kvproto::raft_serverpb::RaftSnapshotData;
-use kvproto::raft_serverpb::{SnapshotCFFile, SnapshotMeta};
+use kvproto::raft_serverpb::{RaftSnapshotData, SnapshotCFFile, SnapshotMeta};
 use protobuf::Message;
 use protobuf::RepeatedField;
 use raft::eraftpb::Snapshot as RaftSnapshot;
@@ -48,6 +47,7 @@ use crate::raftstore::store::metrics::{
     SNAPSHOT_CF_SIZE,
 };
 use crate::raftstore::store::peer_storage::JOB_STATUS_CANCELLING;
+use crate::tiflash_ffi::invoke;
 
 // Data in CF_RAFT should be excluded for a snapshot.
 pub const SNAPSHOT_CFS: &[CfName] = &[CF_DEFAULT, CF_LOCK, CF_WRITE];
@@ -280,7 +280,7 @@ fn check_file_size_and_checksum(
 }
 
 #[derive(Default)]
-struct CfFile {
+pub struct CfFile {
     pub cf: CfName,
     pub path: PathBuf,
     pub tmp_path: PathBuf,
@@ -318,6 +318,38 @@ pub struct Snap {
 }
 
 impl Snap {
+    pub fn get_cf_files(&self) -> &Vec<CfFile> {
+        &self.cf_files
+    }
+
+    pub fn read_lock_cf_file(
+        &self,
+        cf_file: &CfFile,
+        region: &Region,
+        abort: Arc<AtomicUsize>,
+        lock_cf_snap: &mut invoke::SnapKVData,
+    ) -> Result<()> {
+        if plain_file_used(cf_file.cf) {
+            let file = box_try!(File::open(&cf_file.path));
+
+            let mut decoder = BufReader::new(file);
+            loop {
+                check_abort(&abort)?;
+                let key = box_try!(decoder.decode_compact_bytes());
+                if key.is_empty() {
+                    break;
+                }
+                let ori_key = keys::origin_key(&key);
+                box_try!(check_key_in_region(&ori_key, &region));
+                let ori_val = box_try!(decoder.decode_compact_bytes());
+                lock_cf_snap.push_back((ori_key.to_vec(), ori_val.to_vec()));
+            }
+            Ok(())
+        } else {
+            unreachable!()
+        }
+    }
+
     fn new<T: Into<PathBuf>>(
         dir: T,
         key: &SnapKey,
@@ -1326,7 +1358,7 @@ impl SnapManager {
         Ok(Box::new(f))
     }
 
-    pub fn get_snapshot_for_applying(&self, key: &SnapKey) -> RaftStoreResult<Box<dyn Snapshot>> {
+    pub fn gen_snap_for_applying(&self, key: &SnapKey) -> RaftStoreResult<Snap> {
         let core = self.core.rl();
         let s = Snap::new_for_applying(
             &core.base,
@@ -1339,7 +1371,15 @@ impl SnapManager {
                 format!("snapshot of {:?} not exists.", key).to_string(),
             )));
         }
-        Ok(Box::new(s))
+        Ok(s)
+    }
+
+    pub fn get_snapshot_for_applying(&self, key: &SnapKey) -> RaftStoreResult<Box<dyn Snapshot>> {
+        let o = self.gen_snap_for_applying(key);
+        match o {
+            Ok(s) => Ok(Box::new(s)),
+            Err(e) => Err(e),
+        }
     }
 
     /// Get the approximate size of snap file exists in snap directory.

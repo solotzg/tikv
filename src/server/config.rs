@@ -14,6 +14,8 @@ pub use crate::storage::Config as StorageConfig;
 pub const DEFAULT_CLUSTER_ID: u64 = 0;
 pub const DEFAULT_LISTENING_ADDR: &str = "127.0.0.1:20160";
 const DEFAULT_ADVERTISE_LISTENING_ADDR: &str = "";
+pub const DEFAULT_ENGINE_LABEL_KEY: &str = "engine";
+pub const DEFAULT_ENGINE_LABEL_VALUE: &str = "tiflash";
 const DEFAULT_STATUS_ADDR: &str = "127.0.0.1:20180";
 const DEFAULT_GRPC_CONCURRENCY: usize = 4;
 const DEFAULT_GRPC_CONCURRENT_STREAM: i32 = 1024;
@@ -55,6 +57,7 @@ pub struct Config {
     // Server advertise listening address for outer communication.
     // If not set, we will use listening address instead.
     pub advertise_addr: String,
+    pub engine_addr: String,
 
     // These are related to TiKV status.
     pub status_addr: String,
@@ -111,6 +114,7 @@ impl Default for Config {
             addr: DEFAULT_LISTENING_ADDR.to_owned(),
             labels: HashMap::default(),
             advertise_addr: DEFAULT_ADVERTISE_LISTENING_ADDR.to_owned(),
+            engine_addr: "".to_string(),
             status_addr: DEFAULT_STATUS_ADDR.to_owned(),
             status_thread_pool_size: 1,
             grpc_compression_type: GrpcCompressionType::None,
@@ -208,6 +212,20 @@ impl Config {
             return Err(box_err!(
                 "server.grpc_stream_initial_window_size is too large."
             ));
+        }
+
+        match self.labels.insert(
+            DEFAULT_ENGINE_LABEL_KEY.to_owned(),
+            DEFAULT_ENGINE_LABEL_VALUE.to_owned(),
+        ) {
+            Some(x) => {
+                if x != DEFAULT_ENGINE_LABEL_VALUE {
+                    return Err(box_err!(
+                        "server.labels should not contain any label with key 'engine'."
+                    ));
+                }
+            }
+            _ => {}
         }
 
         for (k, v) in &self.labels {

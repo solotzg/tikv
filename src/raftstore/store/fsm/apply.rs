@@ -20,7 +20,7 @@ use engine::{ALL_CFS, CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE};
 use kvproto::import_sstpb::SSTMeta;
 use kvproto::metapb::{Peer as PeerMeta, Region};
 use kvproto::raft_cmdpb::{
-    AdminCmdType, AdminRequest, AdminResponse, ChangePeerRequest, CmdType, CommitMergeRequest,
+    AdminCmdType, AdminRequest, AdminResponse, ChangePeerRequest, CommitMergeRequest,
     RaftCmdRequest, RaftCmdResponse, Request, Response,
 };
 use kvproto::raft_serverpb::{
@@ -52,6 +52,7 @@ use super::metrics::*;
 use super::{BasicMailbox, BatchRouter, BatchSystem, Fsm, HandlerBuilder, PollHandler};
 
 use super::super::RegionTask;
+use crate::tiflash_ffi::invoke::{get_tiflash_server_helper, RaftCmdHeader, TiFlashApplyRes};
 
 const WRITE_BATCH_MAX_KEYS: usize = 128;
 const DEFAULT_APPLY_WB_SIZE: usize = 4 * 1024;
@@ -289,7 +290,6 @@ struct ApplyContext {
     kv_wb_last_bytes: u64,
     kv_wb_last_keys: u64,
 
-    last_applied_index: u64,
     committed_count: usize,
 
     // Indicates that WAL can be synchronized when data is written to KV engine.
@@ -325,7 +325,6 @@ impl ApplyContext {
             apply_res: vec![],
             kv_wb_last_bytes: 0,
             kv_wb_last_keys: 0,
-            last_applied_index: 0,
             committed_count: 0,
             enable_sync_log: cfg.sync_log,
             sync_log_hint: false,
@@ -346,20 +345,6 @@ impl ApplyContext {
             self.kv_wb_last_keys = 0;
         }
         self.cbs.push(ApplyCallback::new(delegate.region.clone()));
-        self.last_applied_index = delegate.apply_state.get_applied_index();
-    }
-
-    /// Commits all changes have done for delegate. `persistent` indicates whether
-    /// write the changes into rocksdb.
-    ///
-    /// This call is valid only when it's between a `prepare_for` and `finish_for`.
-    pub fn commit(&mut self, delegate: &mut ApplyDelegate) {
-        if self.last_applied_index < delegate.apply_state.get_applied_index() {
-            delegate.write_apply_state(&self.engines, self.kv_wb.as_mut().unwrap());
-        }
-        // last_applied_index doesn't need to be updated, set persistent to true will
-        // force it call `prepare_for` automatically.
-        self.commit_opt(delegate, true);
     }
 
     fn commit_opt(&mut self, delegate: &mut ApplyDelegate, persistent: bool) {
@@ -402,9 +387,6 @@ impl ApplyContext {
 
     /// Finishes `Apply`s for the delegate.
     pub fn finish_for(&mut self, delegate: &mut ApplyDelegate, results: VecDeque<ExecResult>) {
-        if !delegate.pending_remove {
-            delegate.write_apply_state(&self.engines, self.kv_wb.as_mut().unwrap());
-        }
         self.commit_opt(delegate, false);
         self.apply_res.push(ApplyRes {
             region_id: delegate.region_id(),
@@ -733,6 +715,7 @@ impl ApplyDelegate {
     }
 
     fn write_apply_state(&self, engines: &Engines, wb: &WriteBatch) {
+        info!("persist apply state"; "region_id" => self.region_id(), "peer_id" => self.id(), "state" => ?self.apply_state);
         rocks::util::get_cf_handle(&engines.kv, CF_RAFT)
             .map_err(From::from)
             .and_then(|handle| {
@@ -761,14 +744,15 @@ impl ApplyDelegate {
 
         if !data.is_empty() {
             let cmd = util::parse_data_at(data, index, &self.tag);
-
-            if should_write_to_engine(&cmd, apply_ctx.kv_wb().count()) {
-                apply_ctx.commit(self);
-            }
-
             return self.process_raft_cmd(apply_ctx, index, term, cmd);
         }
 
+        {
+            // hacked by solotzg.
+            let req = RaftCmdRequest::new();
+            get_tiflash_server_helper()
+                .handle_write_raft_cmd(&req, RaftCmdHeader::new(self.region.get_id(), index, term));
+        }
         let mut state = self.apply_state.clone();
         state.set_applied_index(index);
         self.apply_state = state;
@@ -910,7 +894,7 @@ impl ApplyDelegate {
 
         ctx.exec_ctx = Some(self.new_ctx(index, term));
         ctx.kv_kv_wb_mut().set_save_point();
-        let (resp, exec_result) = match self.exec_raft_cmd(ctx, req) {
+        let (resp, exec_result, flash_res) = match self.exec_raft_cmd(ctx, req) {
             Ok(a) => {
                 ctx.kv_kv_wb_mut().pop_save_point().unwrap();
                 a
@@ -932,7 +916,11 @@ impl ApplyDelegate {
                         "err" => ?e
                     ),
                 }
-                (cmd_resp::new_error(e), ApplyResult::None)
+                (
+                    cmd_resp::new_error(e),
+                    ApplyResult::None,
+                    TiFlashApplyRes::None,
+                )
             }
         };
         if let ApplyResult::WaitMergeSource(_) = exec_result {
@@ -944,6 +932,26 @@ impl ApplyDelegate {
 
         self.apply_state = exec_ctx.apply_state;
         self.applied_index_term = term;
+
+        let need_write_apply_state = match flash_res {
+            TiFlashApplyRes::Persist => true,
+            TiFlashApplyRes::NotFound => {
+                error!(
+                    "region not found in tiflash, maybe have exec `RemoveNode` first";
+                    "region_id" => self.region_id(),
+                    "peer_id" => self.id(),
+                    "term" => ctx.exec_ctx.as_ref().unwrap().term,
+                    "index" => ctx.exec_ctx.as_ref().unwrap().index,
+                );
+                true
+            }
+            _ => false,
+        };
+        if need_write_apply_state {
+            if !self.pending_remove {
+                self.write_apply_state(&ctx.engines, ctx.kv_wb());
+            }
+        }
 
         if let ApplyResult::Res(ref exec_result) = exec_result {
             match *exec_result {
@@ -1011,7 +1019,7 @@ impl ApplyDelegate {
         &mut self,
         ctx: &mut ApplyContext,
         req: RaftCmdRequest,
-    ) -> Result<(RaftCmdResponse, ApplyResult)> {
+    ) -> Result<(RaftCmdResponse, ApplyResult, TiFlashApplyRes)> {
         // Include region for epoch not match after merge may cause key not in range.
         let include_region =
             req.get_header().get_region_epoch().get_version() >= self.last_merge_version;
@@ -1027,34 +1035,53 @@ impl ApplyDelegate {
         &mut self,
         ctx: &mut ApplyContext,
         req: &RaftCmdRequest,
-    ) -> Result<(RaftCmdResponse, ApplyResult)> {
+    ) -> Result<(RaftCmdResponse, ApplyResult, TiFlashApplyRes)> {
         let request = req.get_admin_request();
         let cmd_type = request.get_cmd_type();
-        if cmd_type != AdminCmdType::CompactLog && cmd_type != AdminCmdType::CommitMerge {
-            info!(
-                "execute admin command";
-                "region_id" => self.region_id(),
-                "peer_id" => self.id(),
-                "term" => ctx.exec_ctx.as_ref().unwrap().term,
-                "index" => ctx.exec_ctx.as_ref().unwrap().index,
-                "command" => ?request
-            );
+        match cmd_type {
+            AdminCmdType::CompactLog | AdminCmdType::CommitMerge => {}
+            AdminCmdType::ComputeHash | AdminCmdType::VerifyHash => {
+                info!(
+                    "useless admin command";
+                    "region_id" => self.region_id(),
+                    "term" => ctx.exec_ctx.as_ref().unwrap().term,
+                    "index" => ctx.exec_ctx.as_ref().unwrap().index,
+                    "type" => ?cmd_type,
+                );
+            }
+            _ => {
+                info!(
+                    "execute admin command";
+                    "region_id" => self.region_id(),
+                    "peer_id" => self.id(),
+                    "term" => ctx.exec_ctx.as_ref().unwrap().term,
+                    "index" => ctx.exec_ctx.as_ref().unwrap().index,
+                    "command" => ?request
+                );
+            }
         }
 
-        let (mut response, exec_result) = match cmd_type {
+        let ori_apply_state = if cmd_type == AdminCmdType::CompactLog {
+            Some(ctx.exec_ctx.as_ref().unwrap().apply_state.clone())
+        } else {
+            None
+        };
+
+        let (mut response, mut exec_result) = match cmd_type {
             AdminCmdType::ChangePeer => self.exec_change_peer(ctx, request),
             AdminCmdType::Split => self.exec_split(ctx, request),
             AdminCmdType::BatchSplit => self.exec_batch_split(ctx, request),
             AdminCmdType::CompactLog => self.exec_compact_log(ctx, request),
             AdminCmdType::TransferLeader => Err(box_err!("transfer leader won't exec")),
-            AdminCmdType::ComputeHash => self.exec_compute_hash(ctx, request),
-            AdminCmdType::VerifyHash => self.exec_verify_hash(ctx, request),
+            AdminCmdType::ComputeHash => Ok((AdminResponse::new(), ApplyResult::None)),
+            AdminCmdType::VerifyHash => Ok((AdminResponse::new(), ApplyResult::None)),
             // TODO: is it backward compatible to add new cmd_type?
             AdminCmdType::PrepareMerge => self.exec_prepare_merge(ctx, request),
             AdminCmdType::CommitMerge => self.exec_commit_merge(ctx, request),
             AdminCmdType::RollbackMerge => self.exec_rollback_merge(ctx, request),
             AdminCmdType::InvalidAdmin => Err(box_err!("unsupported admin command type")),
-        }?;
+        }
+        .unwrap();
         response.set_cmd_type(cmd_type);
 
         let mut resp = RaftCmdResponse::new();
@@ -1062,77 +1089,61 @@ impl ApplyDelegate {
             let uuid = req.get_header().get_uuid().to_vec();
             resp.mut_header().set_uuid(uuid);
         }
+
+        let flash_res = if let ApplyResult::WaitMergeSource(_) = &exec_result {
+            TiFlashApplyRes::None
+        } else {
+            // hacked by solotzg.
+            get_tiflash_server_helper().handle_admin_raft_cmd(
+                &request,
+                &response,
+                RaftCmdHeader::new(
+                    self.region.get_id(),
+                    ctx.exec_ctx.as_ref().unwrap().index,
+                    ctx.exec_ctx.as_ref().unwrap().term,
+                ),
+            )
+        };
+
+        match flash_res {
+            TiFlashApplyRes::None => {
+                if cmd_type == AdminCmdType::CompactLog {
+                    response = AdminResponse::new();
+                    exec_result = ApplyResult::None;
+                    ctx.exec_ctx.as_mut().unwrap().apply_state = ori_apply_state.unwrap();
+                    info!(
+                        "ignore admin command: CompactLog";
+                        "region_id" => self.region_id(),
+                        "term" => ctx.exec_ctx.as_ref().unwrap().term,
+                        "index" => ctx.exec_ctx.as_ref().unwrap().index,
+                    );
+                }
+            }
+            _ => {}
+        }
+
         resp.set_admin_response(response);
-        Ok((resp, exec_result))
+        Ok((resp, exec_result, flash_res))
     }
 
     fn exec_write_cmd(
         &mut self,
         ctx: &ApplyContext,
         req: &RaftCmdRequest,
-    ) -> Result<(RaftCmdResponse, ApplyResult)> {
-        fail_point!(
-            "on_apply_write_cmd",
-            cfg!(release) || self.id() == 3,
-            |_| {
-                unimplemented!();
-            }
-        );
-
-        let requests = req.get_requests();
-        let mut responses = Vec::with_capacity(requests.len());
-
-        let mut ranges = vec![];
-        let mut ssts = vec![];
-        for req in requests {
-            let cmd_type = req.get_cmd_type();
-            let mut resp = match cmd_type {
-                CmdType::Put => self.handle_put(ctx, req),
-                CmdType::Delete => self.handle_delete(ctx, req),
-                CmdType::DeleteRange => {
-                    self.handle_delete_range(ctx, req, &mut ranges, ctx.use_delete_range)
-                }
-                CmdType::IngestSST => self.handle_ingest_sst(ctx, req, &mut ssts),
-                // Readonly commands are handled in raftstore directly.
-                // Don't panic here in case there are old entries need to be applied.
-                // It's also safe to skip them here, because a restart must have happened,
-                // hence there is no callback to be called.
-                CmdType::Snap | CmdType::Get => {
-                    warn!(
-                        "skip readonly command";
-                        "region_id" => self.region_id(),
-                        "peer_id" => self.id(),
-                        "command" => ?req
-                    );
-                    continue;
-                }
-                CmdType::Prewrite | CmdType::Invalid | CmdType::ReadIndex => {
-                    Err(box_err!("invalid cmd type, message maybe currupted"))
-                }
-            }?;
-
-            resp.set_cmd_type(cmd_type);
-
-            responses.push(resp);
-        }
-
-        let mut resp = RaftCmdResponse::new();
-        if !req.get_header().get_uuid().is_empty() {
-            let uuid = req.get_header().get_uuid().to_vec();
-            resp.mut_header().set_uuid(uuid);
-        }
-        resp.set_responses(RepeatedField::from_vec(responses));
-
-        assert!(ranges.is_empty() || ssts.is_empty());
-        let exec_res = if !ranges.is_empty() {
-            ApplyResult::Res(ExecResult::DeleteRange { ranges })
-        } else if !ssts.is_empty() {
-            ApplyResult::Res(ExecResult::IngestSST { ssts })
-        } else {
-            ApplyResult::None
+    ) -> Result<(RaftCmdResponse, ApplyResult, TiFlashApplyRes)> {
+        let flash_res = {
+            // hacked by solotzg.
+            get_tiflash_server_helper().handle_write_raft_cmd(
+                req,
+                RaftCmdHeader::new(
+                    self.region.get_id(),
+                    ctx.exec_ctx.as_ref().unwrap().index,
+                    ctx.exec_ctx.as_ref().unwrap().term,
+                ),
+            )
         };
 
-        Ok((resp, exec_res))
+        Ok((RaftCmdResponse::new(), ApplyResult::None, flash_res))
     }
 }
 
@@ -1677,7 +1688,7 @@ impl ApplyDelegate {
     }
 
     fn exec_prepare_merge(
-        &mut self,
+        &self,
         ctx: &mut ApplyContext,
         req: &AdminRequest,
     ) -> Result<(AdminResponse, ApplyResult)> {
@@ -1888,7 +1899,7 @@ impl ApplyDelegate {
     }
 
     fn exec_rollback_merge(
-        &mut self,
+        &self,
         ctx: &mut ApplyContext,
         req: &AdminRequest,
     ) -> Result<(AdminResponse, ApplyResult)> {
@@ -1935,7 +1946,7 @@ impl ApplyDelegate {
     }
 
     fn exec_compact_log(
-        &mut self,
+        &self,
         ctx: &mut ApplyContext,
         req: &AdminRequest,
     ) -> Result<(AdminResponse, ApplyResult)> {
@@ -2445,6 +2456,10 @@ impl ApplyFsm {
     fn handle_destroy(&mut self, ctx: &mut ApplyContext, d: Destroy) {
         assert_eq!(d.region_id, self.delegate.region_id());
         if !self.delegate.stopped {
+            {
+                // hacked by solotzg
+                get_tiflash_server_helper().handle_destroy(self.delegate.region_id());
+            }
             self.destroy(ctx);
             if d.async_remove {
                 ctx.notifier.notify(

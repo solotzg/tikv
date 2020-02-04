@@ -36,6 +36,7 @@ use tikv::server::DEFAULT_CLUSTER_ID;
 use tikv::server::{create_raft_storage, Node, Server};
 use tikv::storage::RaftKv;
 use tikv::storage::{self, AutoGCConfig, DEFAULT_ROCKSDB_SUB_DIR};
+use tikv::tiflash_ffi::invoke::{self, get_tiflash_server_helper_mut};
 use tikv_util::check_environment_variables;
 use tikv_util::security::SecurityManager;
 use tikv_util::time::Monitor;
@@ -51,7 +52,7 @@ pub fn run_tikv(mut config: TiKvConfig) {
     tikv_util::set_panic_hook(false, &config.storage.data_dir);
 
     // Print version information.
-    tikv::log_tikv_info();
+    crate::log_proxy_info();
     info!(
         "using config";
         "config" => serde_json::to_string(&config).unwrap(),
@@ -155,17 +156,6 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
         kv_db_opts.set_env(ec);
     }
 
-    // Before create kv engine we need to check whether it needs to upgrade from v2.x to v3.x.
-    // if let Err(e) = tikv::raftstore::store::maybe_upgrade_from_2_to_3(
-    //     &raft_engine,
-    //     db_path.to_str().unwrap(),
-    //     kv_db_opts.clone(),
-    //     &cfg.rocksdb,
-    //     &cache,
-    // ) {
-    //     fatal!("failed to upgrade from v2.x to v3.x: {:?}", e);
-    // };
-
     // Create kv engine, storage.
     let kv_cfs_opts = cfg.rocksdb.build_cf_opts(&cache);
     let kv_engine = rocks::util::new_engine_opt(db_path.to_str().unwrap(), kv_db_opts, kv_cfs_opts)
@@ -184,11 +174,7 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
         engine.clone(),
     );
 
-    let mut lock_mgr = if cfg.pessimistic_txn.enabled {
-        Some(LockManager::new())
-    } else {
-        None
-    };
+    let mut lock_mgr = None;
 
     let storage = create_raft_storage(
         engine.clone(),
@@ -235,11 +221,6 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
         storage.gc_worker.clone(),
     );
 
-    // Create Backup service.
-    let mut backup_worker = tikv_util::worker::Worker::new("backup-endpoint");
-    let backup_scheduler = backup_worker.scheduler();
-    let backup_service = backup::Service::new(backup_scheduler);
-
     // Create Deadlock service.
     let deadlock_service = lock_mgr.as_ref().map(|lm| lm.deadlock_service());
 
@@ -276,12 +257,6 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
             fatal!("failed to register deadlock service");
         }
     }
-    if server
-        .register_service(create_backup(backup_service))
-        .is_some()
-    {
-        fatal!("failed to register backup service");
-    }
 
     let trans = server.transport();
 
@@ -311,28 +286,6 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
     )
     .unwrap_or_else(|e| fatal!("failed to start node: {}", e));
     initial_metric(&cfg.metric, Some(node.id()));
-
-    // Start backup endpoint.
-    let backup_endpoint = backup::Endpoint::new(
-        node.id(),
-        engine.clone(),
-        region_info_accessor.clone(),
-        engines.kv.clone(),
-    );
-    let backup_timer = backup_endpoint.new_timer();
-    backup_worker
-        .start_with_timer(backup_endpoint, backup_timer)
-        .unwrap_or_else(|e| fatal!("failed to start backup endpoint: {}", e));
-
-    // Start auto gc
-    let auto_gc_cfg = AutoGCConfig::new(
-        Arc::clone(&pd_client),
-        region_info_accessor.clone(),
-        node.id(),
-    );
-    if let Err(e) = storage.start_auto_gc(auto_gc_cfg) {
-        fatal!("failed to start auto_gc on storage, error: {}", e);
-    }
 
     let mut metrics_flusher = MetricsFlusher::new(
         engines.clone(),
@@ -383,13 +336,11 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
         }
     }
 
-    signal_handler::handle_signal(Some(engines));
-
-    // Stop backup worker.
-    if let Some(j) = backup_worker.stop() {
-        j.join()
-            .unwrap_or_else(|e| fatal!("failed to stop backup: {:?}", e))
+    let proxy = invoke::TiFlashRaftProxy { check_sum: 666 };
+    unsafe {
+        get_tiflash_server_helper_mut().atomic_update_proxy(&proxy);
     }
+    signal_handler::handle_signal(Some(engines));
 
     // Stop server.
     server

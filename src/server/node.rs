@@ -83,9 +83,14 @@ where
         let mut store = metapb::Store::new();
         store.set_id(INVALID_ID);
         if cfg.advertise_addr.is_empty() {
-            store.set_address(cfg.addr.clone());
+            store.set_peer_address(cfg.addr.clone());
         } else {
-            store.set_address(cfg.advertise_addr.clone())
+            store.set_peer_address(cfg.advertise_addr.clone())
+        }
+        if !cfg.engine_addr.is_empty() {
+            store.set_address(cfg.engine_addr.clone());
+        } else {
+            panic!("tiflash engine addr is empty");
         }
         store.set_version(env!("CARGO_PKG_VERSION").to_string());
 
