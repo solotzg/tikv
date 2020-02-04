@@ -1,15 +1,6 @@
 SHELL := /bin/bash
 ENABLE_FEATURES ?=
 
-# Pick an allocator
-ifeq ($(TCMALLOC),1)
-ENABLE_FEATURES += tcmalloc
-else ifeq ($(SYSTEM_ALLOC),1)
-# no feature needed for system allocator
-else
-ENABLE_FEATURES += jemalloc
-endif
-
 # Disable portable on MacOS to sidestep the compiler bug in clang 4.9
 ifeq ($(shell uname -s),Darwin)
 ROCKSDB_SYS_PORTABLE=0
@@ -39,10 +30,10 @@ CARGO_TARGET_DIR ?= $(CURDIR)/target
 
 BUILD_INFO_GIT_FALLBACK := "Unknown (no git or not git repo)"
 BUILD_INFO_RUSTC_FALLBACK := "Unknown"
-export TIKV_BUILD_TIME := $(shell date -u '+%Y-%m-%d %I:%M:%S')
-export TIKV_BUILD_GIT_HASH := $(shell git rev-parse HEAD 2> /dev/null || echo ${BUILD_INFO_GIT_FALLBACK})
-export TIKV_BUILD_GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2> /dev/null || echo ${BUILD_INFO_GIT_FALLBACK})
-export TIKV_BUILD_RUSTC_VERSION := $(shell rustc --version 2> /dev/null || echo ${BUILD_INFO_RUSTC_FALLBACK})
+export PROXY_BUILD_TIME := $(shell date -u '+%Y-%m-%d %I:%M:%S')
+export PROXY_BUILD_GIT_HASH := $(shell git rev-parse HEAD 2> /dev/null || echo ${BUILD_INFO_GIT_FALLBACK})
+export PROXY_BUILD_GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2> /dev/null || echo ${BUILD_INFO_GIT_FALLBACK})
+export PROXY_BUILD_RUSTC_VERSION := $(shell rustc --version 2> /dev/null || echo ${BUILD_INFO_RUSTC_FALLBACK})
 
 # Turn on cargo pipelining to add more build parallelism. This has shown decent
 # speedups in TiKV.
@@ -73,15 +64,7 @@ dev: format clippy
 	@env FAIL_POINT=1 make test
 
 build:
-	cargo build --no-default-features --features "${ENABLE_FEATURES}" -p cmd
-
-ctl:
-	cargo build --release --no-default-features --features "${ENABLE_FEATURES}" --bin tikv-ctl -p cmd
-	@mkdir -p ${BIN_PATH}
-	@cp -f ${CARGO_TARGET_DIR}/release/tikv-ctl ${BIN_PATH}/
-
-run:
-	cargo run --no-default-features --features  "${ENABLE_FEATURES}" -p cmd --bin tikv-server
+	cargo build --no-default-features --features "${ENABLE_FEATURES}" -p tiflash-proxy
 
 # An optimized build suitable for development and benchmarking, by default built
 # with RocksDB compiled with the "portable" option, for -march=x86-64 (an
@@ -109,9 +92,6 @@ fail_release:
 # on the CI/CD system.
 dist_release:
 	make build_release
-	@mkdir -p ${BIN_PATH}
-	@cp -f ${CARGO_TARGET_DIR}/release/tikv-ctl ${CARGO_TARGET_DIR}/release/tikv-server ${CARGO_TARGET_DIR}/release/tikv-importer ${BIN_PATH}/
-	bash scripts/check-sse4_2.sh
 
 # Distributable bins with SSE4.2 optimizations
 dist_unportable_release:
@@ -128,30 +108,11 @@ dist_fail_release:
 
 # Build with release flag
 build_release:
-	cargo build --no-default-features --release --features "${ENABLE_FEATURES}" -p cmd
+	cargo build --no-default-features --release --features "${ENABLE_FEATURES}" -p tiflash-proxy
 
 # unlike test, this target will trace tests and output logs when fail test is detected.
 trace_test:
 	env CI=true SKIP_FORMAT_CHECK=true FAIL_POINT=1 ${PROJECT_DIR}/ci-build/test.sh
-
-test:
-        # When SIP is enabled, DYLD_LIBRARY_PATH will not work in subshell, so we have to set it
-        # again here. LOCAL_DIR is defined in .travis.yml.
-        # The special linux case below is testing the mem-profiling
-        # features in tikv_alloc, which are marked #[ignore] since
-        # they require special compile-time and run-time setup
-        # Forturately rebuilding with the mem-profiling feature will only
-        # rebuild starting at jemalloc-sys.
-	export DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH}:${LOCAL_DIR}/lib" && \
-	export LOG_LEVEL=DEBUG && \
-	export RUST_BACKTRACE=1 && \
-	cargo test --no-default-features --features "${ENABLE_FEATURES}" --all ${EXTRA_CARGO_ARGS} -- --nocapture && \
-	cargo test --no-default-features --features "${ENABLE_FEATURES}" --bench misc ${EXTRA_CARGO_ARGS} -- --nocapture  && \
-	if [[ "`uname`" == "Linux" ]]; then \
-		export MALLOC_CONF=prof:true,prof_active:false && \
-		cargo test --no-default-features --features "${ENABLE_FEATURES},mem-profiling" ${EXTRA_CARGO_ARGS} -p cmd --bin tikv-server -- --nocapture --ignored; \
-	fi
-	bash scripts/check-bins-for-jemalloc.sh
 
 unset-override:
 	@# unset first in case of any previous overrides

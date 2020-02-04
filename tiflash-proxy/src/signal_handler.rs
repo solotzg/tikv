@@ -11,6 +11,7 @@ mod imp {
     use tikv_util::metrics;
 
     #[allow(dead_code)]
+    #[cfg(not(target_os = "macos"))]
     pub fn handle_signal(engines: Option<Engines>) {
         use nix::sys::signal::{SIGHUP, SIGINT, SIGTERM, SIGUSR1, SIGUSR2};
         use signal::trap::Trap;
@@ -33,6 +34,17 @@ mod imp {
                 // TODO: handle more signal
                 _ => unreachable!(),
             }
+        }
+    }
+
+    #[allow(dead_code)]
+    #[cfg(target_os = "macos")]
+    pub fn handle_signal(_engines: Option<Engines>) {
+        use std::thread;
+        use std::time::Duration;
+        loop {
+            // hacked by solotzg for dbg signal.
+            thread::sleep(Duration::from_millis(500));
         }
     }
 }

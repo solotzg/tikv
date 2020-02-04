@@ -76,10 +76,13 @@ impl<T: PdClient> Runner<T> {
                 .inc();
             return Err(box_err!("store {} has been removed", store_id));
         }
-        let addr = s.get_address().to_owned();
-        // In some tests, we use empty address for store first,
-        // so we should ignore here.
-        // TODO: we may remove this check after we refactor the test.
+        let addr = if s.get_peer_address().is_empty() {
+            s.get_address().to_owned()
+        } else {
+            s.get_peer_address().to_owned()
+        }; // In some tests, we use empty address for store first,
+           // so we should ignore here.
+           // TODO: we may remove this check after we refactor the test.
         if addr.is_empty() {
             return Err(box_err!("invalid empty address for store {}", store_id));
         }

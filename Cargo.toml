@@ -1,6 +1,6 @@
 [package]
 name = "tikv"
-version = "3.1.0-beta.1"
+version = "4.0.0-alpha"
 authors = ["The TiKV Authors"]
 description = "A distributed transactional key-value database powered by Rust and Raft"
 license = "Apache-2.0"
@@ -12,7 +12,7 @@ edition = "2018"
 publish = false
 
 [features]
-default = ["jemalloc"]
+default = []
 tcmalloc = ["tikv_alloc/tcmalloc"]
 jemalloc = ["tikv_alloc/jemalloc", "engine/jemalloc"]
 portable = ["engine/portable"]
@@ -23,38 +23,6 @@ no-fail = ["fail/no_fail"]
 
 [lib]
 name = "tikv"
-
-[[test]]
-name = "failpoints"
-path = "tests/failpoints/mod.rs"
-
-[[test]]
-name = "integrations"
-path = "tests/integrations/mod.rs"
-
-[[bench]]
-name = "raftstore"
-harness = false
-path = "benches/raftstore/mod.rs"
-
-[[bench]]
-name = "coprocessor_executors"
-harness = false
-path = "benches/coprocessor_executors/mod.rs"
-
-[[bench]]
-name = "hierarchy"
-harness = false
-path = "benches/hierarchy/mod.rs"
-
-[[bench]]
-name = "misc"
-path = "benches/misc/mod.rs"
-
-[[bench]]
-name = "deadlock_detector"
-harness = false
-path = "benches/deadlock_detector/mod.rs"
 
 [dependencies]
 hashbrown = { version = "0.1", features = ["serde"] }
@@ -157,10 +125,6 @@ default-features = false
 
 [dev-dependencies]
 panic_hook = { path = "components/panic_hook" }
-test_util = { path = "components/test_util" }
-test_raftstore = { path = "components/test_raftstore" }
-test_storage = { path = "components/test_storage" }
-test_coprocessor = { path = "components/test_coprocessor" }
 # See https://bheisler.github.io/criterion.rs/book/user_guide/known_limitations.html for the usage
 # of `real_blackbox` feature.
 criterion = { version = "0.2.11", features=['real_blackbox'] }
@@ -176,14 +140,6 @@ pprof = { version = "0.3", features = ["flamegraph", "protobuf"] }
 
 [workspace]
 members = [
-  "fuzz",
-  "fuzz/fuzzer-afl",
-  "fuzz/fuzzer-libfuzzer",
-  "fuzz/fuzzer-honggfuzz",
-  "components/test_raftstore",
-  "components/test_storage",
-  "components/test_coprocessor",
-  "components/test_util",
   "components/tikv_alloc",
   "components/match_template",
   "components/codec",
@@ -194,13 +150,12 @@ members = [
   "components/log_wrappers",
   "components/tikv_util",
   "components/external_storage",
-  "components/backup",
-  "cmd",
+  "tiflash-proxy",
 ]
 
 [profile.dev]
 opt-level = 0
-debug = false
+debug = true
 codegen-units = 4
 lto = false
 incremental = true

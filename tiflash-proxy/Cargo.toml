@@ -1,5 +1,5 @@
 [package]
-name = "cmd"
+name = "tiflash-proxy"
 version = "0.0.1"
 license = "Apache-2.0"
 edition = "2018"
@@ -16,16 +16,8 @@ profiling = ["tikv/profiling"]
 no-fail = ["tikv/no-fail"]
 
 [lib]
-name = "cmd"
-
-[[bin]]
-name = "tikv-server"
-
-[[bin]]
-name = "tikv-ctl"
-
-[[bin]]
-name = "tikv-importer"
+name = "tiflash_proxy"
+crate-type =["cdylib"]
 
 [dependencies]
 tikv = { path = "../", default-features = false }
@@ -53,7 +45,6 @@ kvproto = { git = "https://github.com/pingcap/kvproto.git", branch = "release-3.
 tikv_util = { path = "../components/tikv_util" }
 engine = { path = "../components/engine" }
 tikv_alloc = { path = "../components/tikv_alloc" }
-backup = { path = "../components/backup" }
 
 [target.'cfg(unix)'.dependencies]
 signal = "0.6"

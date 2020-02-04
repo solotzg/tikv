@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use std::u64;
 
 use engine::rocks;
-use engine::rocks::Writable;
+use engine::rocks::{ColumnFamilyOptions, SeekKey, SstFileReader, Writable};
 use engine::WriteBatch;
 use engine::CF_RAFT;
 use engine::{util as engine_util, Engines, Mutable, Peekable, Snapshot};
@@ -23,7 +23,7 @@ use crate::raftstore::store::peer_storage::{
 };
 use crate::raftstore::store::snap::{plain_file_used, Error, Result, SNAPSHOT_CFS};
 use crate::raftstore::store::{
-    self, check_abort, keys, ApplyOptions, SnapEntry, SnapKey, SnapManager,
+    self, check_abort, keys, SnapEntry, SnapKey, SnapManager, Snapshot as RaftStoreSnapshot,
 };
 use tikv_util::threadpool::{DefaultContext, ThreadPool, ThreadPoolBuilder};
 use tikv_util::time;
@@ -31,6 +31,8 @@ use tikv_util::timer::Timer;
 use tikv_util::worker::{Runnable, RunnableWithTimer};
 
 use super::metrics::*;
+use crate::raftstore::store::util::check_key_in_region;
+use crate::tiflash_ffi::invoke::{self, get_tiflash_server_helper};
 
 const GENERATE_POOL_SIZE: usize = 2;
 
@@ -53,6 +55,7 @@ pub enum Task {
     },
     Apply {
         region_id: u64,
+        peer_id: u64,
         status: Arc<AtomicUsize>,
     },
     /// Destroy data between [start_key, end_key).
@@ -267,7 +270,7 @@ impl SnapContext {
     }
 
     /// Applies snapshot data of the Region.
-    fn apply_snap(&mut self, region_id: u64, abort: Arc<AtomicUsize>) -> Result<()> {
+    fn apply_snap(&mut self, region_id: u64, peer_id: u64, abort: Arc<AtomicUsize>) -> Result<()> {
         info!("begin apply snap data"; "region_id" => region_id);
         fail_point!("region_apply_snap", |_| { Ok(()) });
         check_abort(&abort)?;
@@ -316,19 +319,71 @@ impl SnapContext {
         defer!({
             self.mgr.deregister(&snap_key, &SnapEntry::Applying);
         });
-        let mut s = box_try!(self.mgr.get_snapshot_for_applying(&snap_key));
-        if !s.exists() {
-            return Err(box_err!("missing snapshot file {}", s.path()));
-        }
-        check_abort(&abort)?;
         let timer = Instant::now();
-        let options = ApplyOptions {
-            db: Arc::clone(&self.engines.kv),
-            region: region.clone(),
-            abort: Arc::clone(&abort),
-            write_batch_size: self.batch_size,
-        };
-        s.apply(options)?;
+        {
+            // hacked by solotzg
+            let s = box_try!(self.mgr.gen_snap_for_applying(&snap_key));
+            if !s.exists() {
+                return Err(box_err!("missing snapshot file {}", s.path()));
+            }
+            check_abort(&abort)?;
+            let mut lock_cf_snap = invoke::SnapKVData::new();
+            let mut write_cf_snap = invoke::SnapKVData::new();
+            let mut default_cf_snap = invoke::SnapKVData::new();
+
+            for cf_file in s.get_cf_files() {
+                if cf_file.size == 0 {
+                    // Skip empty cf file.
+                    continue;
+                }
+
+                if cf_file.cf == engine::CF_LOCK {
+                    s.read_lock_cf_file(cf_file, &region, Arc::clone(&abort), &mut lock_cf_snap)?;
+                    continue;
+                }
+
+                let cf_snap_ref = if cf_file.cf == engine::CF_DEFAULT {
+                    &mut default_cf_snap
+                } else if cf_file.cf == engine::CF_WRITE {
+                    &mut write_cf_snap
+                } else {
+                    unreachable!()
+                };
+
+                let mut sst = SstFileReader::new(ColumnFamilyOptions::default());
+                sst.open(cf_file.path.to_str().unwrap()).unwrap();
+                {
+                    sst.verify_checksum().unwrap();
+                    let mut it = sst.iter();
+                    if it.seek(SeekKey::Start).unwrap() {
+                        loop {
+                            let ori_key = keys::origin_key(it.key());
+                            let ori_val = it.value();
+                            box_try!(check_key_in_region(ori_key, &region));
+                            cf_snap_ref.push_back((ori_key.to_vec(), ori_val.to_vec()));
+                            let ss = it.next().unwrap();
+                            if !ss {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let lock_cf_snap_kv_data = invoke::gen_snap_kv_data(&lock_cf_snap);
+            let write_cf_snap_kv_data = invoke::gen_snap_kv_data(&write_cf_snap);
+            let default_cf_snap_kv_data = invoke::gen_snap_kv_data(&default_cf_snap);
+
+            get_tiflash_server_helper().handle_apply_snapshot(
+                &region,
+                peer_id,
+                lock_cf_snap_kv_data.view,
+                write_cf_snap_kv_data.view,
+                default_cf_snap_kv_data.view,
+                idx,
+                term,
+            );
+        }
 
         let wb = WriteBatch::new();
         region_state.set_state(PeerState::Normal);
@@ -347,13 +402,13 @@ impl SnapContext {
     }
 
     /// Tries to apply the snapshot of the specified Region. It calls `apply_snap` to do the actual work.
-    fn handle_apply(&mut self, region_id: u64, status: Arc<AtomicUsize>) {
+    fn handle_apply(&mut self, region_id: u64, peer_id: u64, status: Arc<AtomicUsize>) {
         status.compare_and_swap(JOB_STATUS_PENDING, JOB_STATUS_RUNNING, Ordering::SeqCst);
         SNAP_COUNTER_VEC.with_label_values(&["apply", "all"]).inc();
         let apply_histogram = SNAP_HISTOGRAM.with_label_values(&["apply"]);
         let timer = apply_histogram.start_coarse_timer();
 
-        match self.apply_snap(region_id, Arc::clone(&status)) {
+        match self.apply_snap(region_id, peer_id, Arc::clone(&status)) {
             Ok(()) => {
                 status.swap(JOB_STATUS_FINISHED, Ordering::SeqCst);
                 SNAP_COUNTER_VEC
@@ -574,8 +629,13 @@ impl Runner {
             if self.ctx.ingest_maybe_stall() {
                 break;
             }
-            if let Some(Task::Apply { region_id, status }) = self.pending_applies.pop_front() {
-                self.ctx.handle_apply(region_id, status);
+            if let Some(Task::Apply {
+                region_id,
+                peer_id,
+                status,
+            }) = self.pending_applies.pop_front()
+            {
+                self.ctx.handle_apply(region_id, peer_id, status);
             }
         }
     }
@@ -851,6 +911,7 @@ mod tests {
             sched
                 .schedule(Task::Apply {
                     region_id: id,
+                    peer_id: 0,
                     status,
                 })
                 .unwrap();

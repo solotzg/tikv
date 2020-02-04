@@ -74,6 +74,7 @@ pub mod pd;
 pub mod raftstore;
 pub mod server;
 pub mod storage;
+pub mod tiflash_ffi;
 
 /// Returns the tikv version information.
 pub fn tikv_version_info() -> String {
