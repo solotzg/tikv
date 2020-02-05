@@ -948,7 +948,9 @@ impl ApplyDelegate {
             _ => false,
         };
         if need_write_apply_state {
-            self.write_apply_state(&ctx.engines, ctx.kv_wb());
+            if !self.pending_remove {
+                self.write_apply_state(&ctx.engines, ctx.kv_wb());
+            }
         }
 
         if let ApplyResult::Res(ref exec_result) = exec_result {
