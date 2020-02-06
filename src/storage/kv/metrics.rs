@@ -61,7 +61,7 @@ lazy_static! {
     pub static ref ASYNC_REQUESTS_COUNTER_VEC: AsyncRequestsCounterVec = {
         register_static_int_counter_vec!(
             AsyncRequestsCounterVec,
-            "tikv_storage_engine_async_request_total",
+            "tiflash_storage_engine_async_request_total",
             "Total number of engine asynchronous requests",
             &["type", "status"]
         )
@@ -70,7 +70,7 @@ lazy_static! {
     pub static ref ASYNC_REQUESTS_DURATIONS_VEC: AsyncRequestsDurationVec = {
         register_static_histogram_vec!(
             AsyncRequestsDurationVec,
-            "tikv_storage_engine_async_request_duration_seconds",
+            "tiflash_storage_engine_async_request_duration_seconds",
             "Bucketed histogram of processing successful asynchronous requests.",
             &["type"],
             exponential_buckets(0.0005, 2.0, 20).unwrap()
