@@ -39,7 +39,7 @@ impl ThreadsCollector {
         let ns = namespace.into();
         let cpu_totals = CounterVec::new(
             Opts::new(
-                "tiflash_thread_cpu_seconds_total",
+                "tiflash_proxy_thread_cpu_seconds_total",
                 "Total user and system CPU time spent in \
                  seconds by threads.",
             )
@@ -49,7 +49,7 @@ impl ThreadsCollector {
         .unwrap();
         descs.extend(cpu_totals.desc().into_iter().cloned());
         let threads_state = IntGaugeVec::new(
-            Opts::new("tiflash_threads_state", "Number of threads in each state.")
+            Opts::new("tiflash_proxy_threads_state", "Number of threads in each state.")
                 .namespace(ns.clone()),
             &["state"],
         )
@@ -57,7 +57,7 @@ impl ThreadsCollector {
         descs.extend(threads_state.desc().into_iter().cloned());
         let io_totals = CounterVec::new(
             Opts::new(
-                "tiflash_threads_io_bytes_total",
+                "tiflash_proxy_threads_io_bytes_total",
                 "Total number of bytes which threads cause to be fetched from or sent to the storage layer.",
             ).namespace(ns.clone()),
             &["name", "tid", "io"],
@@ -66,7 +66,7 @@ impl ThreadsCollector {
         descs.extend(io_totals.desc().into_iter().cloned());
         let voluntary_ctxt_switches = IntCounterVec::new(
             Opts::new(
-                "tiflash_thread_voluntary_context_switches",
+                "tiflash_proxy_thread_voluntary_context_switches",
                 "Number of thread voluntary context switches.",
             )
             .namespace(ns.clone()),
@@ -75,7 +75,7 @@ impl ThreadsCollector {
         .unwrap();
         let nonvoluntary_ctxt_switches = IntCounterVec::new(
             Opts::new(
-                "tiflash_thread_nonvoluntary_context_switches",
+                "tiflash_proxy_thread_nonvoluntary_context_switches",
                 "Number of thread nonvoluntary context switches.",
             )
             .namespace(ns),

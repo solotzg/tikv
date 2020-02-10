@@ -4,119 +4,119 @@ use prometheus::*;
 
 lazy_static! {
     pub static ref IMPORT_RPC_DURATION: HistogramVec = register_histogram_vec!(
-        "tiflash_import_rpc_duration",
+        "tiflash_proxy_import_rpc_duration",
         "Bucketed histogram of import rpc duration",
         &["request", "result"],
         exponential_buckets(0.001, 2.0, 30).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_WRITE_CHUNK_BYTES: Histogram = register_histogram!(
-        "tiflash_import_write_chunk_bytes",
+        "tiflash_proxy_import_write_chunk_bytes",
         "Bucketed histogram of import write chunk bytes",
         exponential_buckets(1024.0, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_WRITE_CHUNK_DURATION: Histogram = register_histogram!(
-        "tiflash_import_write_chunk_duration",
+        "tiflash_proxy_import_write_chunk_duration",
         "Bucketed histogram of import write chunk duration",
         exponential_buckets(0.001, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_UPLOAD_CHUNK_BYTES: Histogram = register_histogram!(
-        "tiflash_import_upload_chunk_bytes",
+        "tiflash_proxy_import_upload_chunk_bytes",
         "Bucketed histogram of import upload chunk bytes",
         exponential_buckets(1024.0, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_UPLOAD_CHUNK_DURATION: Histogram = register_histogram!(
-        "tiflash_import_upload_chunk_duration",
+        "tiflash_proxy_import_upload_chunk_duration",
         "Bucketed histogram of import upload chunk duration",
         exponential_buckets(0.001, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_RANGE_DELIVERY_DURATION: Histogram = register_histogram!(
-        "tiflash_import_range_delivery_duration",
+        "tiflash_proxy_import_range_delivery_duration",
         "Bucketed histogram of import range delivery duration",
         exponential_buckets(0.001, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_SPLIT_SST_DURATION: Histogram = register_histogram!(
-        "tiflash_import_split_sst_duration",
+        "tiflash_proxy_import_split_sst_duration",
         "Bucketed histogram of import split sst duration",
         exponential_buckets(0.1, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_SST_DELIVERY_DURATION: Histogram = register_histogram!(
-        "tiflash_import_sst_delivery_duration",
+        "tiflash_proxy_import_sst_delivery_duration",
         "Bucketed histogram of import sst delivery duration",
         exponential_buckets(0.1, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_SST_RECV_DURATION: Histogram = register_histogram!(
-        "tiflash_import_sst_recv_duration",
+        "tiflash_proxy_import_sst_recv_duration",
         "Bucketed histogram of import sst recv duration",
         exponential_buckets(0.1, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_SST_UPLOAD_DURATION: Histogram = register_histogram!(
-        "tiflash_import_sst_upload_duration",
+        "tiflash_proxy_import_sst_upload_duration",
         "Bucketed histogram of import sst upload duration",
         exponential_buckets(0.1, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_SST_INGEST_DURATION: Histogram = register_histogram!(
-        "tiflash_import_sst_ingest_duration",
+        "tiflash_proxy_import_sst_ingest_duration",
         "Bucketed histogram of import sst ingest duration",
         exponential_buckets(0.1, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_SST_CHUNK_BYTES: Histogram = register_histogram!(
-        "tiflash_import_sst_chunk_bytes",
+        "tiflash_proxy_import_sst_chunk_bytes",
         "Bucketed histogram of sst chunk bytes",
         exponential_buckets(1024.0, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORT_EACH_PHASE: GaugeVec = register_gauge_vec!(
-        "tiflash_import_each_phase",
+        "tiflash_proxy_import_each_phase",
         "Import each phase duration of importer",
         &["phase"]
     )
     .unwrap();
     pub static ref IMPORT_STORE_SAPCE_NOT_ENOUGH_COUNTER: IntCounterVec =
         register_int_counter_vec!(
-            "tiflash_import_wait_store_available_count",
+            "tiflash_proxy_import_wait_store_available_count",
             "Counter of wait store available",
             &["store_id"]
         )
         .unwrap();
     pub static ref IMPORTER_DOWNLOAD_DURATION: HistogramVec = register_histogram_vec!(
-        "tiflash_import_download_duration",
+        "tiflash_proxy_import_download_duration",
         "Bucketed histogram of importer download duration",
         &["type"],
         exponential_buckets(0.001, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORTER_DOWNLOAD_BYTES: Histogram = register_histogram!(
-        "tiflash_import_download_bytes",
+        "tiflash_proxy_import_download_bytes",
         "Bucketed histogram of importer download bytes",
         exponential_buckets(1024.0, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORTER_INGEST_DURATION: HistogramVec = register_histogram_vec!(
-        "tiflash_import_ingest_duration",
+        "tiflash_proxy_import_ingest_duration",
         "Bucketed histogram of importer ingest duration",
         &["type"],
         exponential_buckets(0.001, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORTER_INGEST_BYTES: Histogram = register_histogram!(
-        "tiflash_import_ingest_bytes",
+        "tiflash_proxy_import_ingest_bytes",
         "Bucketed histogram of importer ingest bytes",
         exponential_buckets(1024.0, 2.0, 20).unwrap()
     )
     .unwrap();
     pub static ref IMPORTER_ERROR_VEC: IntCounterVec = register_int_counter_vec!(
-        "tiflash_import_error_counter",
+        "tiflash_proxy_import_error_counter",
         "Total number of importer errors",
         &["error"]
     )

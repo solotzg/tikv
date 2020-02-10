@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 lazy_static! {
     pub static ref APPLY_PROPOSAL: Histogram = register_histogram!(
-        "tiflash_raftstore_apply_proposal",
+        "tiflash_proxy_raftstore_apply_proposal",
         "The count of proposals sent by a region at once",
         exponential_buckets(1.0, 2.0, 20).unwrap()
     )
