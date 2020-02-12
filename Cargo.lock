@@ -1204,7 +1204,7 @@ dependencies = [
 [[package]]
 name = "kvproto"
 version = "0.0.1"
-source = "git+https://github.com/pingcap/kvproto.git?branch=release-3.1#bb43ea8286627d00821d06f1be91f8fc698b4fd9"
+source = "git+https://github.com/solotzg/kvproto.git?branch=learner-merge#e3bab7401a5d11d28bb98d4af1c3ee57d8929731"
 dependencies = [
  "futures 0.1.29 (registry+https://github.com/rust-lang/crates.io-index)",
  "grpcio 0.4.7 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1213,6 +1213,12 @@ dependencies = [
  "protobuf-build 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "kvproto"
+version = "0.0.1"
+source = "git+https://github.com/pingcap/kvproto.git?branch=release-3.1#bb43ea8286627d00821d06f1be91f8fc698b4fd9"
+replace = "kvproto 0.0.1 (git+https://github.com/solotzg/kvproto.git?branch=learner-merge)"
 
 [[package]]
 name = "language-tags"
@@ -3636,6 +3642,7 @@ dependencies = [
 "checksum jobserver 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)" = "f2b1d42ef453b30b7387e113da1c83ab1605d90c5b4e0eb8e96d016ed3b8c160"
 "checksum kernel32-sys 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "7507624b29483431c0ba2d82aece8ca6cdba9382bff4ddd0f7490560c056098d"
 "checksum kvproto 0.0.1 (git+https://github.com/pingcap/kvproto.git?branch=release-3.1)" = "<none>"
+"checksum kvproto 0.0.1 (git+https://github.com/solotzg/kvproto.git?branch=learner-merge)" = "<none>"
 "checksum language-tags 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "a91d884b6667cd606bb5a69aa0c99ba811a115fc68915e7056ec08a46e93199a"
 "checksum lazy_static 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)" = "3b37545ab726dd833ec6420aaba8231c5b320814b9029ad585555d2a03e94fbf"
 "checksum lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
