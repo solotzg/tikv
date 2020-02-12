@@ -2825,7 +2825,7 @@ dependencies = [
  "signal 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "slog 2.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "slog-global 0.1.0 (git+https://github.com/breeswish/slog-global.git?rev=91904ade)",
- "tikv 4.0.0-alpha",
+ "tikv 4.1.0-alpha",
  "tikv_alloc 0.1.0",
  "tikv_util 0.1.0",
  "toml 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -2835,7 +2835,7 @@ dependencies = [
 
 [[package]]
 name = "tikv"
-version = "4.0.0-alpha"
+version = "4.1.0-alpha"
 dependencies = [
  "arrow 0.10.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "backtrace 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
