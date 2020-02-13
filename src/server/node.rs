@@ -92,7 +92,7 @@ where
         } else {
             panic!("tiflash engine addr is empty");
         }
-        store.set_version(env!("CARGO_PKG_VERSION").to_string());
+        store.set_version(crate::cargo_pkg_version());
 
         let mut labels = Vec::new();
         for (k, v) in &cfg.labels {

@@ -32,7 +32,7 @@ fn proxy_version_info() -> String {
          \nGit Commit Branch: {}\
          \nUTC Build Time:    {}\
          \nRust Version:      {}",
-        env!("CARGO_PKG_VERSION"),
+        tikv::cargo_pkg_version(),
         option_env!("PROXY_BUILD_GIT_HASH").unwrap_or(fallback),
         option_env!("PROXY_BUILD_GIT_BRANCH").unwrap_or(fallback),
         option_env!("PROXY_BUILD_TIME").unwrap_or(fallback),

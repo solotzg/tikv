@@ -76,6 +76,11 @@ pub mod server;
 pub mod storage;
 pub mod tiflash_ffi;
 
+/// Prints version of tikv lib.
+pub fn cargo_pkg_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Returns the tikv version information.
 pub fn tikv_version_info() -> String {
     let fallback = "Unknown (env var does not exist when building)";
@@ -85,7 +90,7 @@ pub fn tikv_version_info() -> String {
          \nGit Commit Branch: {}\
          \nUTC Build Time:    {}\
          \nRust Version:      {}",
-        env!("CARGO_PKG_VERSION"),
+        cargo_pkg_version(),
         option_env!("TIKV_BUILD_GIT_HASH").unwrap_or(fallback),
         option_env!("TIKV_BUILD_GIT_BRANCH").unwrap_or(fallback),
         option_env!("TIKV_BUILD_TIME").unwrap_or(fallback),
