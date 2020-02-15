@@ -3,7 +3,6 @@
 use std::cell::RefCell;
 use std::collections::Bound::{Excluded, Unbounded};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{atomic, Arc};
 use std::time::{Duration, Instant};
 use std::{cmp, mem, u64, usize};
@@ -18,7 +17,7 @@ use kvproto::raft_cmdpb::{
     TransferLeaderResponse,
 };
 use kvproto::raft_serverpb::{
-    MergeMsgType, MergeState, PeerState, RaftApplyState, RaftMessage, RaftSnapshotData,
+    ExtraMessageType, MergeState, PeerState, RaftApplyState, RaftMessage, RaftSnapshotData,
 };
 use protobuf::{self, Message};
 use raft::eraftpb::{self, ConfChangeType, EntryType, MessageType};
@@ -31,9 +30,10 @@ use uuid::Uuid;
 
 use crate::pd::{PdTask, INVALID_ID};
 use crate::raftstore::coprocessor::{CoprocessorHost, RegionChangeEvent};
+use crate::raftstore::store::fsm::apply::CatchUpLogs;
 use crate::raftstore::store::fsm::store::PollContext;
 use crate::raftstore::store::fsm::{
-    apply, Apply, ApplyMetrics, ApplyTask, ApplyTaskRes, GroupState, Proposal, RegionProposal,
+    apply, Apply, ApplyMetrics, ApplyTask, GroupState, Proposal, RegionProposal,
 };
 use crate::raftstore::store::keys::{self, enc_end_key, enc_start_key};
 use crate::raftstore::store::worker::{ReadDelegate, ReadProgress, RegionTask};
@@ -106,9 +106,9 @@ bitflags! {
     // TODO: maybe declare it as protobuf struct is better.
     /// A bitmap contains some useful flags when dealing with `eraftpb::Entry`.
     pub struct ProposalContext: u8 {
-        const SYNC_LOG       = 0b00000001;
-        const SPLIT          = 0b00000010;
-        const PREPARE_MERGE  = 0b00000100;
+        const SYNC_LOG       = 0b0000_0001;
+        const SPLIT          = 0b0000_0010;
+        const PREPARE_MERGE  = 0b0000_0100;
     }
 }
 
@@ -155,19 +155,6 @@ pub struct CheckTickResult {
     up_to_date: bool,
 }
 
-/// A struct that stores the state to wait for `PrepareMerge` apply result.
-///
-/// When handling the apply result of a `CommitMerge`, the source peer may have
-/// not handle the apply result of the `PrepareMerge`, so the target peer has
-/// to abort current handle process and wait for it asynchronously.
-pub struct WaitApplyResultState {
-    /// The following apply results waiting to be handled, including the `CommitMerge`.
-    /// These will be handled once `ready_to_merge` is true.
-    pub results: Vec<ApplyTaskRes>,
-    /// It is used by target peer to check whether the apply result of `PrepareMerge` is handled.
-    pub ready_to_merge: Arc<AtomicBool>,
-}
-
 pub struct Peer {
     /// The ID of the Region which this Peer belongs to.
     region_id: u64,
@@ -194,6 +181,7 @@ pub struct Peer {
     /// If it fails to send messages to leader.
     pub leader_unreachable: bool,
     /// Whether this peer is destroyed asynchronously.
+    /// If it's true when merging, its data in storeMeta will be removed early by the target peer
     pub pending_remove: bool,
     /// If a snapshot is being applied asynchronously, messages should not be sent.
     pending_messages: Vec<eraftpb::Message>,
@@ -203,7 +191,6 @@ pub struct Peer {
     pub peers_start_pending_time: Vec<(u64, Instant)>,
     /// A inaccurate cache about which peer is marked as down.
     down_peer_ids: Vec<u64>,
-    pub recent_conf_change_time: Instant,
 
     /// An inaccurate difference in region size since last reset.
     /// It is used to decide whether split check is needed.
@@ -237,10 +224,8 @@ pub struct Peer {
     last_committed_prepare_merge_idx: u64,
     /// The merge related state. It indicates this Peer is in merging.
     pub pending_merge_state: Option<MergeState>,
-    /// The state to wait for `PrepareMerge` apply result.
-    pub pending_merge_apply_result: Option<WaitApplyResultState>,
     /// source region is catching up logs for merge
-    pub catch_up_logs: Option<Arc<AtomicU64>>,
+    pub catch_up_logs: Option<CatchUpLogs>,
 
     /// Write Statistics for PD to schedule hot spot.
     pub peer_stat: PeerStat,
@@ -294,7 +279,6 @@ impl Peer {
             peer_heartbeats: HashMap::default(),
             peers_start_pending_time: vec![],
             down_peer_ids: vec![],
-            recent_conf_change_time: Instant::now(),
             size_diff_hint: 0,
             delete_keys_hint: 0,
             approximate_size: None,
@@ -318,7 +302,6 @@ impl Peer {
             raft_log_size_hint: 0,
             leader_lease: Lease::new(cfg.raft_store_max_leader_lease()),
             pending_messages: vec![],
-            pending_merge_apply_result: None,
             peer_stat: PeerStat::default(),
             catch_up_logs: None,
         };
@@ -364,13 +347,13 @@ impl Peer {
             // Though the entries is empty, it is possible that one source peer has caught up the logs
             // but commit index is not updated. If Other source peers are already destroyed, so the raft
             // group will not make any progress, namely the source peer can not get the latest commit index anymore.
-            // Here update the commit index to let source apply rest uncommitted entires.
-            if merge.get_commit() > self.raft_group.raft.raft_log.committed {
+            // Here update the commit index to let source apply rest uncommitted entries.
+            return if merge.get_commit() > self.raft_group.raft.raft_log.committed {
                 self.raft_group.raft.raft_log.commit_to(merge.get_commit());
-                return Some(merge.get_commit());
+                Some(merge.get_commit())
             } else {
-                return None;
-            }
+                None
+            };
         }
         let first = entries.first().unwrap();
         // make sure message should be with index not smaller than committed
@@ -409,12 +392,12 @@ impl Peer {
             );
             return None;
         }
-        // If initialized is false, it implicitly means applyfsm does not exist now.
+        // If initialized is false, it implicitly means apply fsm does not exist now.
         let initialized = self.get_store().is_initialized();
-        // If async_remove is true, it means peerfsm needs to be removed after its
-        // corresponding applyfsm was removed.
-        // If it is false, it means either applyfsm does not exist or there is no task
-        // in applyfsm so it's ok to remove peerfsm immediately.
+        // If async_remove is true, it means peer fsm needs to be removed after its
+        // corresponding apply fsm was removed.
+        // If it is false, it means either apply fsm does not exist or there is no task
+        // in apply fsm so it's ok to remove peer fsm immediately.
         let async_remove = if self.is_applying_snapshot() {
             if !self.mut_store().cancel_applying_snap() {
                 info!(
@@ -675,6 +658,8 @@ impl Peer {
                 MessageType::MsgHeartbeat => metrics.heartbeat += 1,
                 MessageType::MsgHeartbeatResponse => metrics.heartbeat_resp += 1,
                 MessageType::MsgTransferLeader => metrics.transfer_leader += 1,
+                MessageType::MsgReadIndex => metrics.read_index += 1,
+                MessageType::MsgReadIndexResp => metrics.read_index_resp += 1,
                 MessageType::MsgTimeoutNow => {
                     // After a leader transfer procedure is triggered, the lease for
                     // the old leader may be expired earlier than usual, since a new leader
@@ -694,15 +679,17 @@ impl Peer {
                 | MessageType::MsgPropose
                 | MessageType::MsgUnreachable
                 | MessageType::MsgSnapStatus
-                | MessageType::MsgCheckQuorum
-                | MessageType::MsgReadIndex
-                | MessageType::MsgReadIndexResp => {}
+                | MessageType::MsgCheckQuorum => {}
             }
         }
     }
 
     /// Steps the raft message.
-    pub fn step(&mut self, mut m: eraftpb::Message) -> Result<()> {
+    pub fn step<T, C>(
+        &mut self,
+        ctx: &mut PollContext<T, C>,
+        mut m: eraftpb::Message,
+    ) -> Result<()> {
         fail_point!(
             "step_message_3_1",
             { self.peer.get_store_id() == 3 && self.region_id == 1 },
@@ -734,6 +721,11 @@ impl Peer {
                 self.pending_messages.push(resp);
                 return Ok(());
             }
+        }
+
+        if msg_type == MessageType::MsgTransferLeader {
+            self.execute_transfer_leader(ctx, &m);
+            return Ok(());
         }
 
         self.raft_group.step(m)?;
@@ -1106,6 +1098,15 @@ impl Peer {
             "peer_id" => self.peer.get_id(),
         );
 
+        let before_handle_raft_ready_1003 = || {
+            fail_point!(
+                "before_handle_raft_ready_1003",
+                self.peer.get_id() == 1003 && self.is_leader(),
+                |_| {}
+            );
+        };
+        before_handle_raft_ready_1003();
+
         let mut ready = self.raft_group.ready_since(self.last_applying_idx);
 
         self.on_role_changed(ctx, &ready);
@@ -1265,6 +1266,25 @@ impl Peer {
                         merge_to_be_update = false;
                     }
                 }
+
+                fail_point!(
+                    "before_send_rollback_merge_1003",
+                    if self.peer_id() != 1003 {
+                        false
+                    } else {
+                        let index = entry.get_index();
+                        let data = entry.get_data();
+                        if data.is_empty() || entry.get_entry_type() != EntryType::EntryNormal {
+                            false
+                        } else {
+                            let cmd: RaftCmdRequest = util::parse_data_at(data, index, &self.tag);
+                            cmd.has_admin_request()
+                                && cmd.get_admin_request().get_cmd_type()
+                                    == AdminCmdType::RollbackMerge
+                        }
+                    },
+                    |_| {}
+                );
             }
             if !committed_entries.is_empty() {
                 self.last_applying_idx = committed_entries.last().unwrap().get_index();
@@ -1277,6 +1297,7 @@ impl Peer {
                 ctx.apply_router
                     .schedule_task(self.region_id, ApplyTask::apply(apply));
             }
+            fail_point!("after_send_to_apply_1003", self.peer_id() == 1003, |_| {});
         }
 
         self.apply_reads(ctx, &ready);
@@ -1353,7 +1374,8 @@ impl Peer {
         // `ready`.
         if !self.is_leader() {
             // NOTE: there could still be some pending reads proposed by the peer when it was
-            // leader. They will be cleared in `clear_uncommitted` later in the function.
+            // leader. They will be cleared in `clear_uncommitted_on_role_change` later in
+            // the function.
             self.pending_reads.advance_replica_reads(states);
             self.post_pending_read_index_on_replica(ctx);
         } else if self.ready_to_handle_read() {
@@ -1371,7 +1393,7 @@ impl Peer {
         if ready.ss.is_some() {
             let term = self.term();
             // all uncommitted reads will be dropped silently in raft.
-            self.pending_reads.clear_uncommitted(term);
+            self.pending_reads.clear_uncommitted_on_role_change(term);
         }
 
         if let Some(propose_time) = propose_time {
@@ -1737,34 +1759,11 @@ impl Peer {
         self.raft_group.transfer_leader(peer.get_id());
     }
 
-    fn ready_to_transfer_leader<T, C>(
-        &self,
-        ctx: &mut PollContext<T, C>,
-        peer: &metapb::Peer,
-    ) -> bool {
-        let peer_id = peer.get_id();
-        let status = self.raft_group.status_ref();
-        let progress = status.progress.unwrap();
-
-        if !progress.voters().contains_key(&peer_id) {
-            return false;
-        }
-
-        for progress in progress.voters().values() {
-            if progress.state == ProgressState::Snapshot {
-                return false;
-            }
-        }
-
+    fn pre_transfer_leader(&mut self, peer: &metapb::Peer) -> bool {
         // Checks if safe to transfer leader.
-        // Check `has_pending_conf` is necessary because `recent_conf_change_time` is updated
-        // on applied. TODO: fix the transfer leader issue in Raft.
-        if self.raft_group.raft.has_pending_conf()
-            || duration_to_sec(self.recent_conf_change_time.elapsed())
-                < ctx.cfg.raft_reject_transfer_leader_duration.as_secs() as f64
-        {
-            debug!(
-                "reject transfer leader due to the region was config changed recently";
+        if self.raft_group.raft.has_pending_conf() {
+            info!(
+                "reject transfer leader due to pending conf change";
                 "region_id" => self.region_id,
                 "peer_id" => self.peer.get_id(),
                 "peer" => ?peer,
@@ -1772,8 +1771,59 @@ impl Peer {
             return false;
         }
 
+        // Broadcast heartbeat to make sure followers commit the entries immediately.
+        // It's only necessary to ping the target peer, but ping all for simplicity.
+        self.raft_group.ping();
+        let mut msg = eraftpb::Message::new();
+        msg.set_to(peer.get_id());
+        msg.set_msg_type(eraftpb::MessageType::MsgTransferLeader);
+        msg.set_from(self.peer_id());
+        // log term here represents the term of last log. For leader, the term of last
+        // log is always its current term. Not just set term because raft library forbids
+        // setting it for MsgTransferLeader messages.
+        msg.set_log_term(self.term());
+        self.raft_group.raft.msgs.push(msg);
+        true
+    }
+
+    fn ready_to_transfer_leader<T, C>(
+        &self,
+        ctx: &mut PollContext<T, C>,
+        mut index: u64,
+        peer: &metapb::Peer,
+    ) -> Option<&'static str> {
+        let peer_id = peer.get_id();
+        let status = self.raft_group.status_ref();
+        let progress = status.progress.unwrap();
+
+        if !progress.voters().contains_key(&peer_id) {
+            return Some("non voter");
+        }
+
+        for (id, progress) in progress.voters() {
+            if progress.state == ProgressState::Snapshot {
+                return Some("pending snapshot");
+            }
+            if *id == peer_id && index == 0 {
+                // index will be zero if it's sent from an instance without
+                // pre-transfer-leader feature. Set it to matched to make it
+                // possible to transfer leader to an older version. It may be
+                // useful during rolling restart.
+                index = progress.matched;
+            }
+        }
+
+        if self.raft_group.raft.has_pending_conf()
+            || self.raft_group.raft.pending_conf_index > index
+        {
+            return Some("pending conf change");
+        }
+
         let last_index = self.get_store().last_index();
-        last_index <= progress.voters()[&peer_id].matched + ctx.cfg.leader_transfer_max_log_lag
+        if last_index >= index + ctx.cfg.leader_transfer_max_log_lag {
+            return Some("log gap");
+        }
+        None
     }
 
     fn read_local<T, C>(&mut self, ctx: &mut PollContext<T, C>, req: RaftCmdRequest, cb: Callback) {
@@ -2089,7 +2139,77 @@ impl Peer {
         Ok(propose_index)
     }
 
-    // Return true to if the transfer leader request is accepted.
+    fn execute_transfer_leader<T, C>(
+        &mut self,
+        ctx: &mut PollContext<T, C>,
+        msg: &eraftpb::Message,
+    ) {
+        // log_term is set by original leader, represents the term last log is written
+        // in, which should be equal to the original leader's term.
+        if msg.get_log_term() != self.term() {
+            return;
+        }
+
+        if self.is_leader() {
+            let from = match self.get_peer_from_cache(msg.get_from()) {
+                Some(p) => p,
+                None => return,
+            };
+            match self.ready_to_transfer_leader(ctx, msg.get_index(), &from) {
+                Some(reason) => {
+                    info!(
+                        "reject to transfer leader";
+                        "region_id" => self.region_id,
+                        "peer_id" => self.peer.get_id(),
+                        "to" => ?from,
+                        "reason" => reason,
+                        "index" => msg.get_index(),
+                        "last_index" => self.get_store().last_index(),
+                    );
+                }
+                None => self.transfer_leader(&from),
+            }
+            return;
+        }
+
+        if self.is_applying_snapshot()
+            || self.has_pending_snapshot()
+            || msg.get_from() != self.leader_id()
+        {
+            info!(
+                "reject transferring leader";
+                "region_id" =>self.region_id,
+                "peer_id" => self.peer.get_id(),
+                "from" => msg.get_from(),
+            );
+            return;
+        }
+
+        let mut msg = eraftpb::Message::new();
+        msg.set_from(self.peer_id());
+        msg.set_to(self.leader_id());
+        msg.set_msg_type(eraftpb::MessageType::MsgTransferLeader);
+        msg.set_index(self.get_store().applied_index());
+        msg.set_log_term(self.term());
+        self.raft_group.raft.msgs.push(msg);
+    }
+
+    /// Return true to if the transfer leader request is accepted.
+    ///
+    /// When transferring leadership begins, leader sends a pre-transfer
+    /// to target follower first to ensures it's ready to become leader.
+    /// After that the real transfer leader process begin.
+    ///
+    /// 1. pre_transfer_leader on leader:
+    ///     Leader will send a MsgTransferLeader to follower.
+    /// 2. execute_transfer_leader on follower
+    ///     If follower passes all necessary checks, it will reply an
+    ///     ACK with type MsgTransferLeader and its promised persistent index.
+    /// 3. execute_transfer_leader on leader:
+    ///     Leader checks if it's appropriate to transfer leadership. If it
+    ///     does, it calls raft transfer_leader API to do the remaining work.
+    ///
+    /// See also: tikv/rfcs#37.
     fn propose_transfer_leader<T, C>(
         &mut self,
         ctx: &mut PollContext<T, C>,
@@ -2101,18 +2221,7 @@ impl Peer {
         let transfer_leader = get_transfer_leader_cmd(&req).unwrap();
         let peer = transfer_leader.get_peer();
 
-        let transferred = if self.ready_to_transfer_leader(ctx, peer) {
-            self.transfer_leader(peer);
-            true
-        } else {
-            info!(
-                "transfer leader message ignored directly";
-                "region_id" => self.region_id,
-                "peer_id" => self.peer.get_id(),
-                "message" => ?req,
-            );
-            false
-        };
+        let transferred = self.pre_transfer_leader(peer);
 
         // transfer leader command doesn't need to replicate log and apply, so we
         // return immediately. Note that this command may fail, we can view it just as an advice
@@ -2334,7 +2443,7 @@ impl Peer {
         }
     }
 
-    pub fn send_load_merge_target<T: Transport>(&self, trans: &mut T) {
+    pub fn bcast_wake_up_message<T: Transport>(&self, trans: &mut T) {
         let region = self.raft_group.get_store().region();
         for peer in region.get_peers() {
             if peer.get_id() == self.peer_id() {
@@ -2345,11 +2454,11 @@ impl Peer {
             send_msg.set_from_peer(self.peer.clone());
             send_msg.set_region_epoch(self.region().get_region_epoch().clone());
             send_msg.set_to_peer(peer.clone());
-            let merge_msg = send_msg.mut_merge();
-            merge_msg.set_msg_type(MergeMsgType::MsgLoadMergeTarget);
+            let extra_msg = send_msg.mut_extra_msg();
+            extra_msg.set_field_type(ExtraMessageType::MsgRegionWakeUp);
             if let Err(e) = trans.send(send_msg) {
                 error!(
-                    "failed to send load merge target message";
+                    "failed to send wake up message";
                     "region_id" => self.region_id,
                     "peer_id" => self.peer.get_id(),
                     "target_peer_id" => peer.get_id(),
