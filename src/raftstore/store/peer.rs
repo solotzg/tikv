@@ -18,7 +18,7 @@ use kvproto::raft_cmdpb::{
     TransferLeaderResponse,
 };
 use kvproto::raft_serverpb::{
-    MergeMsgType, MergeState, PeerState, RaftApplyState, RaftMessage, RaftSnapshotData,
+    ExtraMessageType, MergeState, PeerState, RaftApplyState, RaftMessage, RaftSnapshotData,
 };
 use protobuf::{self, Message};
 use raft::eraftpb::{self, ConfChangeType, EntryType, MessageType};
@@ -2429,7 +2429,7 @@ impl Peer {
         }
     }
 
-    pub fn send_load_merge_target<T: Transport>(&self, trans: &mut T) {
+    pub fn bcast_wake_up_message<T: Transport>(&self, trans: &mut T) {
         let region = self.raft_group.get_store().region();
         for peer in region.get_peers() {
             if peer.get_id() == self.peer_id() {
@@ -2440,11 +2440,11 @@ impl Peer {
             send_msg.set_from_peer(self.peer.clone());
             send_msg.set_region_epoch(self.region().get_region_epoch().clone());
             send_msg.set_to_peer(peer.clone());
-            let merge_msg = send_msg.mut_merge();
-            merge_msg.set_msg_type(MergeMsgType::MsgLoadMergeTarget);
+            let extra_msg = send_msg.mut_extra_msg();
+            extra_msg.set_field_type(ExtraMessageType::MsgRegionWakeUp);
             if let Err(e) = trans.send(send_msg) {
                 error!(
-                    "failed to send load merge target message";
+                    "failed to send wake up message";
                     "region_id" => self.region_id,
                     "peer_id" => self.peer.get_id(),
                     "target_peer_id" => peer.get_id(),

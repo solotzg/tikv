@@ -359,8 +359,8 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 self.fsm.group_state = GroupState::Chaos;
                 self.register_raft_base_tick();
 
-                if self.fsm.peer.raft_group.raft.is_learner {
-                    self.fsm.peer.send_load_merge_target(&mut self.ctx.trans);
+                if self.fsm.peer.peer.get_is_learner() {
+                    self.fsm.peer.bcast_wake_up_message(&mut self.ctx.trans);
                 }
             }
             CasualMessage::SnapshotGenerated => {
@@ -884,8 +884,8 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
             return Ok(());
         }
 
-        if msg.has_merge() {
-            // noop
+        if msg.has_extra_msg() {
+            // now noop
             return Ok(());
         }
 
@@ -1256,6 +1256,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 return Ok(Some(key));
             }
         }
+
         let mut is_overlapped = false;
         let mut regions_to_destroy = vec![];
         // In some extreme cases, it may cause source peer destroyed improperly so that a later
@@ -1300,6 +1301,8 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
             if snap_region.get_region_epoch().get_version()
                 > exist_region.get_region_epoch().get_version()
             {
+                // If snapshot's epoch version is greater than exist region's, the exist region
+                // may has been merged already.
                 let _ = self.ctx.router.force_send(
                     exist_region.get_id(),
                     PeerMsg::CasualMessage(CasualMessage::RegionOverlapped),
