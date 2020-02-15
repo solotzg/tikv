@@ -27,7 +27,7 @@ pub use tiflash_raft_proxy::run_tiflash_proxy_ffi;
 fn proxy_version_info() -> String {
     let fallback = "Unknown (env var does not exist when building)";
     format!(
-        "\nRelease Version:   {}\
+        "Release Version:   {}\
          \nGit Commit Hash:   {}\
          \nGit Commit Branch: {}\
          \nUTC Build Time:    {}\
