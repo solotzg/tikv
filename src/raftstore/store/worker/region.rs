@@ -24,7 +24,8 @@ use crate::raftstore::store::peer_storage::{
 use crate::raftstore::store::snap::{plain_file_used, Error, Result, SNAPSHOT_CFS};
 use crate::raftstore::store::transport::CasualRouter;
 use crate::raftstore::store::{
-    self, check_abort, keys, SnapEntry, SnapKey, SnapManager, Snapshot as RaftStoreSnapshot,
+    self, check_abort, keys, CasualMessage, SnapEntry, SnapKey, SnapManager,
+    Snapshot as RaftStoreSnapshot,
 };
 use tikv_util::threadpool::{DefaultContext, ThreadPool, ThreadPoolBuilder};
 use tikv_util::time;
