@@ -176,8 +176,22 @@ impl TiFlashServerHelper {
 
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
-        assert_eq!(self.magic_number, 0x13579BDF);
-        assert_eq!(self.version, 1);
+        const MAGIC_NUMBER: u32 = 0x13579BDF;
+        const VERSION: u32 = 1;
+
+        if self.magic_number != MAGIC_NUMBER {
+            eprintln!(
+                "TiFlash Proxy FFI magic number not match: expect {} got {}",
+                MAGIC_NUMBER, self.magic_number
+            );
+            std::process::exit(-1);
+        } else if self.version != VERSION {
+            eprintln!(
+                "TiFlash Proxy FFI version not match: expect {} got {}",
+                VERSION, self.version
+            );
+            std::process::exit(-1);
+        }
     }
 
     pub fn handle_admin_raft_cmd(
