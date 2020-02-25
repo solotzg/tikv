@@ -8,7 +8,7 @@ use hyper::{self, Body, Method, Request, Response, Server, StatusCode};
 #[cfg(target_os = "linux")]
 use pprof;
 #[cfg(target_os = "linux")]
-use prost::Message;
+use pprof::protos::Message;
 #[cfg(target_os = "linux")]
 use regex::Regex;
 use tokio_threadpool::{Builder, ThreadPool};
