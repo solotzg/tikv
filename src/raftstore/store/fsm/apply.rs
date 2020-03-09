@@ -22,7 +22,7 @@ use engine::{ALL_CFS, CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE};
 use kvproto::import_sstpb::SSTMeta;
 use kvproto::metapb::{Peer as PeerMeta, Region};
 use kvproto::raft_cmdpb::{
-    AdminCmdType, AdminRequest, AdminResponse, ChangePeerRequest, CommitMergeRequest,
+    AdminCmdType, AdminRequest, AdminResponse, ChangePeerRequest, CmdType, CommitMergeRequest,
     RaftCmdRequest, RaftCmdResponse, Request, Response,
 };
 use kvproto::raft_serverpb::{
@@ -53,7 +53,10 @@ use tikv_util::MustConsumeVec;
 use super::metrics::*;
 
 use super::super::RegionTask;
-use crate::tiflash_ffi::invoke::{get_tiflash_server_helper, RaftCmdHeader, TiFlashApplyRes};
+use crate::tiflash_ffi::invoke;
+use crate::tiflash_ffi::invoke::{
+    get_tiflash_server_helper, RaftCmdHeader, TiFlashApplyRes, WriteCmdType, WriteCmds,
+};
 
 const WRITE_BATCH_MAX_KEYS: usize = 128;
 const DEFAULT_APPLY_WB_SIZE: usize = 4 * 1024;
@@ -774,9 +777,11 @@ impl ApplyDelegate {
 
         {
             // hacked by solotzg.
-            let req = RaftCmdRequest::new();
-            get_tiflash_server_helper()
-                .handle_write_raft_cmd(&req, RaftCmdHeader::new(self.region.get_id(), index, term));
+            let cmds = WriteCmds::new();
+            get_tiflash_server_helper().handle_write_raft_cmd(
+                &cmds,
+                RaftCmdHeader::new(self.region.get_id(), index, term),
+            );
         }
         let mut state = self.apply_state.clone();
         state.set_applied_index(index);
@@ -1160,19 +1165,67 @@ impl ApplyDelegate {
         ctx: &ApplyContext,
         req: &RaftCmdRequest,
     ) -> Result<(RaftCmdResponse, ApplyResult, TiFlashApplyRes)> {
-        let flash_res = {
-            // hacked by solotzg.
-            get_tiflash_server_helper().handle_write_raft_cmd(
-                req,
-                RaftCmdHeader::new(
-                    self.region.get_id(),
-                    ctx.exec_ctx.as_ref().unwrap().index,
-                    ctx.exec_ctx.as_ref().unwrap().term,
-                ),
-            )
-        };
+        // hacked by solotzg.
 
-        Ok((RaftCmdResponse::new(), ApplyResult::None, flash_res))
+        const NONE_STR: &str = "";
+        let requests = req.get_requests();
+        let mut ssts = vec![];
+        let mut cmds = WriteCmds::with_capacity(requests.len());
+        for req in requests {
+            let cmd_type = req.get_cmd_type();
+            match cmd_type {
+                CmdType::Put => {
+                    let put = req.get_put();
+                    cmds.push(
+                        put.get_key(),
+                        put.get_value(),
+                        WriteCmdType::Put,
+                        put.get_cf(),
+                    );
+                }
+                CmdType::Delete => {
+                    let del = req.get_delete();
+                    cmds.push(
+                        del.get_key(),
+                        NONE_STR.as_ref(),
+                        WriteCmdType::Del,
+                        del.get_cf(),
+                    );
+                }
+                CmdType::IngestSST => {
+                    ssts.push(req.get_ingest_sst().get_sst().clone());
+                }
+                CmdType::Snap | CmdType::Get | CmdType::DeleteRange => {
+                    // tiflash will drop table, no need DeleteRange
+                    continue;
+                }
+                CmdType::Prewrite | CmdType::Invalid | CmdType::ReadIndex => {
+                    panic!("invalid cmd type, message maybe currupted");
+                }
+            }
+        }
+
+        return if !ssts.is_empty() {
+            assert_eq!(cmds.len(), 0);
+            self.handle_ingest_sst_for_tiflash(ctx, &ssts);
+            Ok((
+                RaftCmdResponse::new(),
+                ApplyResult::Res(ExecResult::IngestSST { ssts }),
+                TiFlashApplyRes::Persist,
+            ))
+        } else {
+            let flash_res = {
+                get_tiflash_server_helper().handle_write_raft_cmd(
+                    &cmds,
+                    RaftCmdHeader::new(
+                        self.region.get_id(),
+                        ctx.exec_ctx.as_ref().unwrap().index,
+                        ctx.exec_ctx.as_ref().unwrap().term,
+                    ),
+                )
+            };
+            Ok((RaftCmdResponse::new(), ApplyResult::None, flash_res))
+        };
     }
 }
 
@@ -1343,6 +1396,61 @@ impl ApplyDelegate {
         ranges.push(Range::new(cf.to_owned(), start_key, end_key));
 
         Ok(resp)
+    }
+
+    fn handle_ingest_sst_for_tiflash(&mut self, ctx: &ApplyContext, ssts: &Vec<SSTMeta>) {
+        let lock_cf_snap = invoke::SnapKVData::new();
+        let mut write_cf_snap = invoke::SnapKVData::new();
+        let mut default_cf_snap = invoke::SnapKVData::new();
+
+        for sst in ssts {
+            if sst.get_cf_name() == CF_LOCK {
+                panic!("should not ingest sst of lock cf");
+            }
+            check_sst_for_ingestion(sst, &self.region).unwrap_or_else(|e| {
+                error!(
+                     "ingest fail";
+                     "region_id" => self.region_id(),
+                     "peer_id" => self.id(),
+                     "sst" => ?sst,
+                     "region" => ?&self.region,
+                     "err" => ?e
+                );
+                // This file is not valid, we can delete it here.
+                let _ = ctx.importer.delete(sst);
+                panic!();
+            });
+
+            let snap = ctx
+                .importer
+                .gen_snapshot_from_sst(sst, &ctx.engines.kv)
+                .unwrap_or_else(|e| {
+                    // If this failed, it means that the file is corrupted or something
+                    // is wrong with the engine, but we can do nothing about that.
+                    panic!("{} ingest {:?}: {:?}", self.tag, sst, e);
+                });
+
+            if sst.get_cf_name() == CF_WRITE {
+                write_cf_snap = snap;
+            } else if sst.get_cf_name() == CF_DEFAULT {
+                default_cf_snap = snap;
+            } else {
+                unreachable!()
+            }
+        }
+
+        let lock_cf_snap_kv_data = invoke::gen_snap_kv_data(&lock_cf_snap);
+        let write_cf_snap_kv_data = invoke::gen_snap_kv_data(&write_cf_snap);
+        let default_cf_snap_kv_data = invoke::gen_snap_kv_data(&default_cf_snap);
+        get_tiflash_server_helper().handle_apply_snapshot(
+            &self.region,
+            self.id,
+            lock_cf_snap_kv_data.view,
+            write_cf_snap_kv_data.view,
+            default_cf_snap_kv_data.view,
+            ctx.exec_ctx.as_ref().unwrap().index,
+            ctx.exec_ctx.as_ref().unwrap().term,
+        );
     }
 
     fn handle_ingest_sst(

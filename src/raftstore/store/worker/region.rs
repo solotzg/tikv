@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use std::u64;
 
 use engine::rocks;
-use engine::rocks::{ColumnFamilyOptions, SeekKey, SstFileReader, Writable};
+use engine::rocks::Writable;
 use engine::WriteBatch;
 use engine::CF_RAFT;
 use engine::{util as engine_util, Engines, Mutable, Peekable, Snapshot};
@@ -34,7 +34,7 @@ use tikv_util::worker::{Runnable, RunnableWithTimer};
 
 use super::metrics::*;
 use crate::raftstore::store::util::check_key_in_region;
-use crate::tiflash_ffi::invoke::{self, get_tiflash_server_helper};
+use crate::tiflash_ffi::invoke::{self, gen_snap_kv_data_from_sst, get_tiflash_server_helper};
 
 const GENERATE_POOL_SIZE: usize = 2;
 
@@ -357,23 +357,10 @@ impl<R: CasualRouter> SnapContext<R> {
                     unreachable!()
                 };
 
-                let mut sst = SstFileReader::new(ColumnFamilyOptions::default());
-                sst.open(cf_file.path.to_str().unwrap()).unwrap();
-                {
-                    sst.verify_checksum().unwrap();
-                    let mut it = sst.iter();
-                    if it.seek(SeekKey::Start).unwrap() {
-                        loop {
-                            let ori_key = keys::origin_key(it.key());
-                            let ori_val = it.value();
-                            box_try!(check_key_in_region(ori_key, &region));
-                            cf_snap_ref.push_back((ori_key.to_vec(), ori_val.to_vec()));
-                            let ss = it.next().unwrap();
-                            if !ss {
-                                break;
-                            }
-                        }
-                    }
+                gen_snap_kv_data_from_sst(cf_file.path.to_str().unwrap(), cf_snap_ref);
+
+                for kv in cf_snap_ref {
+                    check_key_in_region(kv.0.as_ref(), &region).unwrap();
                 }
             }
 

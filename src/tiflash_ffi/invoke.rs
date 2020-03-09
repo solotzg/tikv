@@ -1,4 +1,7 @@
-use kvproto::{metapb, raft_cmdpb, raft_serverpb};
+use crate::raftstore::store::keys;
+use engine::rocks::{ColumnFamilyOptions, SeekKey, SstFileReader};
+use engine::{CF_DEFAULT, CF_LOCK, CF_WRITE};
+use kvproto::{metapb, raft_cmdpb};
 use std::collections::VecDeque;
 
 type TiFlashServerPtr = *const u8;
@@ -30,6 +33,129 @@ pub struct TiFlashRaftProxy {
 pub struct SnapshotData {
     _data: (Vec<BaseBuffView>, Vec<BaseBuffView>),
     pub view: SnapshotDataView,
+}
+
+pub fn gen_snap_kv_data_from_sst(cf_file_path: &str, cf_snap: &mut SnapKVData) {
+    let mut sst = SstFileReader::new(ColumnFamilyOptions::default());
+    sst.open(cf_file_path).unwrap();
+    {
+        sst.verify_checksum().unwrap();
+        let mut it = sst.iter();
+        if it.seek(SeekKey::Start).unwrap() {
+            loop {
+                let ori_key = keys::origin_key(it.key());
+                let ori_val = it.value();
+                cf_snap.push_back((ori_key.to_vec(), ori_val.to_vec()));
+                let ss = it.next().unwrap();
+                if !ss {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+pub enum WriteCmdType {
+    Put,
+    Del,
+}
+
+pub enum WriteCmdCf {
+    Lock,
+    Write,
+    Default,
+}
+
+pub fn name_to_cf(cf: &str) -> WriteCmdCf {
+    if cf.is_empty() {
+        return WriteCmdCf::Default;
+    }
+    if cf == CF_LOCK {
+        return WriteCmdCf::Lock;
+    } else if cf == CF_WRITE {
+        return WriteCmdCf::Write;
+    } else if cf == CF_DEFAULT {
+        return WriteCmdCf::Default;
+    }
+    unreachable!()
+}
+
+#[repr(C)]
+pub struct WriteCmdsView {
+    keys: *const BaseBuffView,
+    vals: *const BaseBuffView,
+    cmd_types: *const u8,
+    cf: *const u8,
+    len: u64,
+}
+
+impl Into<u8> for WriteCmdType {
+    fn into(self) -> u8 {
+        return match self {
+            WriteCmdType::Put => 0,
+            WriteCmdType::Del => 1,
+        };
+    }
+}
+
+impl Into<u8> for WriteCmdCf {
+    fn into(self) -> u8 {
+        return match self {
+            WriteCmdCf::Lock => 0,
+            WriteCmdCf::Write => 1,
+            WriteCmdCf::Default => 2,
+        };
+    }
+}
+
+#[derive(Default)]
+pub struct WriteCmds {
+    keys: Vec<BaseBuffView>,
+    vals: Vec<BaseBuffView>,
+    cmd_type: Vec<u8>,
+    cf: Vec<u8>,
+}
+
+impl WriteCmds {
+    pub fn with_capacity(cap: usize) -> WriteCmds {
+        WriteCmds {
+            keys: Vec::<BaseBuffView>::with_capacity(cap),
+            vals: Vec::<BaseBuffView>::with_capacity(cap),
+            cmd_type: Vec::<u8>::with_capacity(cap),
+            cf: Vec::<u8>::with_capacity(cap),
+        }
+    }
+
+    pub fn new() -> WriteCmds {
+        WriteCmds::default()
+    }
+
+    pub fn push(&mut self, key: &[u8], val: &[u8], cmd_type: WriteCmdType, cf: &str) {
+        self.keys.push(BaseBuffView {
+            data: key.as_ptr(),
+            len: key.len() as u64,
+        });
+        self.vals.push(BaseBuffView {
+            data: val.as_ptr(),
+            len: val.len() as u64,
+        });
+        self.cmd_type.push(cmd_type.into());
+        self.cf.push(name_to_cf(cf).into());
+    }
+
+    pub fn len(&self) -> usize {
+        return self.cmd_type.len();
+    }
+
+    fn gen_view(&self) -> WriteCmdsView {
+        WriteCmdsView {
+            keys: self.keys.as_ptr(),
+            vals: self.vals.as_ptr(),
+            cmd_types: self.cmd_type.as_ptr(),
+            cf: self.cf.as_ptr(),
+            len: self.cmd_type.len() as u64,
+        }
+    }
 }
 
 pub fn gen_snap_kv_data(snap: &SnapKVData) -> SnapshotData {
@@ -124,7 +250,7 @@ impl ProtoMsgBaseBuff {
 pub struct TiFlashServerHelper {
     inner: TiFlashServerPtr,
     gc_buff: extern "C" fn(*const BaseBuff),
-    handle_write_raft_cmd: extern "C" fn(TiFlashServerPtr, BaseBuffView, RaftCmdHeader) -> u32,
+    handle_write_raft_cmd: extern "C" fn(TiFlashServerPtr, WriteCmdsView, RaftCmdHeader) -> u32,
     handle_admin_raft_cmd:
         extern "C" fn(TiFlashServerPtr, BaseBuffView, BaseBuffView, RaftCmdHeader) -> u32,
     handle_apply_snapshot: extern "C" fn(
@@ -159,14 +285,10 @@ pub fn get_tiflash_server_helper_mut() -> &'static mut TiFlashServerHelper {
 impl TiFlashServerHelper {
     pub fn handle_write_raft_cmd(
         &self,
-        requests: &raft_cmdpb::RaftCmdRequest,
+        cmds: &WriteCmds,
         header: RaftCmdHeader,
     ) -> TiFlashApplyRes {
-        let res = (self.handle_write_raft_cmd)(
-            self.inner,
-            ProtoMsgBaseBuff::new(requests).buff_view,
-            header,
-        );
+        let res = (self.handle_write_raft_cmd)(self.inner, cmds.gen_view(), header);
         TiFlashApplyRes::from(res)
     }
 
@@ -177,7 +299,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 1;
+        const VERSION: u32 = 2;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(

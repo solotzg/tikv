@@ -25,6 +25,8 @@ use tikv_util::time::Limiter;
 use super::metrics::*;
 use super::{Error, Result};
 use crate::raftstore::store::keys;
+use crate::tiflash_ffi::invoke;
+use crate::tiflash_ffi::invoke::gen_snap_kv_data_from_sst;
 
 /// SSTImporter manages SST files that are waiting for ingesting.
 pub struct SSTImporter {
@@ -77,6 +79,19 @@ impl SSTImporter {
             }
             Err(e) => {
                 error!("ingest failed"; "meta" => ?meta, "err" => %e);
+                Err(e)
+            }
+        }
+    }
+
+    pub fn gen_snapshot_from_sst(&self, meta: &SSTMeta, db: &DB) -> Result<invoke::SnapKVData> {
+        match self.dir.gen_snapshot_from_sst(meta, db) {
+            Ok(s) => {
+                info!("gen snapshot from sst"; "meta" => ?meta);
+                Ok(s)
+            }
+            Err(e) => {
+                error!("gen snapshot from sst failed"; "meta" => ?meta, "err" => %e);
                 Err(e)
             }
         }
@@ -381,8 +396,7 @@ impl ImportDir {
         Ok(path)
     }
 
-    fn ingest(&self, meta: &SSTMeta, db: &DB) -> Result<()> {
-        let start = Instant::now();
+    fn pre_ingest(&self, meta: &SSTMeta, db: &DB) -> Result<ImportPath> {
         let path = self.join(meta)?;
         let cf = meta.get_cf_name();
         prepare_sst_for_ingestion(&path.save, &path.clone)?;
@@ -395,8 +409,14 @@ impl ImportDir {
         } else {
             debug!("skipping SST validation since length and crc32 are both 0");
         }
+        Ok(path)
+    }
 
-        let handle = get_cf_handle(db, cf)?;
+    fn ingest(&self, meta: &SSTMeta, db: &DB) -> Result<()> {
+        let start = Instant::now();
+        let path = self.pre_ingest(meta, db)?;
+
+        let handle = get_cf_handle(db, meta.get_cf_name())?;
         let mut opts = IngestExternalFileOptions::new();
         opts.move_files(true);
         db.ingest_external_file_cf(handle, &opts, &[path.clone.to_str().unwrap()])?;
@@ -404,6 +424,20 @@ impl ImportDir {
             .with_label_values(&["ingest"])
             .observe(start.elapsed().as_secs_f64());
         Ok(())
+    }
+
+    fn gen_snapshot_from_sst(&self, meta: &SSTMeta, db: &DB) -> Result<invoke::SnapKVData> {
+        let start = Instant::now();
+        let path = self.pre_ingest(meta, db)?;
+
+        let mut snap = invoke::SnapKVData::new();
+        gen_snap_kv_data_from_sst(path.clone.to_str().unwrap(), &mut snap);
+
+        IMPORTER_INGEST_DURATION
+            .with_label_values(&["ingest"])
+            .observe(start.elapsed().as_secs_f64());
+
+        Ok(snap)
     }
 
     fn list_ssts(&self) -> Result<Vec<SSTMeta>> {
@@ -1162,6 +1196,21 @@ mod tests {
 
             meta.set_length(0); // disable validation.
             meta.set_crc32(0);
+
+            {
+                let snap = importer.gen_snapshot_from_sst(&meta, &db).unwrap();
+                let v = snap.clone().into_iter().collect::<Vec<_>>();
+                assert_eq!(
+                    v,
+                    vec![
+                        (b"t9102_r01".to_vec(), b"abc".to_vec()),
+                        (b"t9102_r04".to_vec(), b"xyz".to_vec()),
+                        (b"t9102_r07".to_vec(), b"pqrst".to_vec()),
+                        (b"t9102_r13".to_vec(), b"www".to_vec()),
+                    ]
+                );
+            }
+
             importer.ingest(&meta, &db).unwrap();
 
             // verifies the DB content is correct.
