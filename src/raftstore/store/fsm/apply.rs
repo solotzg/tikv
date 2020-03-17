@@ -1227,7 +1227,7 @@ impl ApplyDelegate {
 
         return if !ssts.is_empty() {
             assert_eq!(cmds.len(), 0);
-            self.handle_ingest_sst_for_tiflash(ctx, &ssts);
+            let ssts = self.handle_ingest_sst_for_tiflash(ctx, ssts);
             Ok((
                 RaftCmdResponse::new(),
                 ApplyResult::Res(ExecResult::IngestSST { ssts }),
@@ -1418,16 +1418,21 @@ impl ApplyDelegate {
         Ok(resp)
     }
 
-    fn handle_ingest_sst_for_tiflash(&mut self, ctx: &ApplyContext, ssts: &Vec<SSTMeta>) {
+    fn handle_ingest_sst_for_tiflash(
+        &mut self,
+        ctx: &ApplyContext,
+        ssts: Vec<SSTMeta>,
+    ) -> Vec<SSTMeta> {
         let lock_cf_snap = invoke::SnapKVData::new();
         let mut write_cf_snap = invoke::SnapKVData::new();
         let mut default_cf_snap = invoke::SnapKVData::new();
 
+        let mut ingested_ssts = Vec::with_capacity(ssts.len());
         for sst in ssts {
             if sst.get_cf_name() == CF_LOCK {
                 panic!("should not ingest sst of lock cf");
             }
-            check_sst_for_ingestion(sst, &self.region).unwrap_or_else(|e| {
+            if let Err(e) = check_sst_for_ingestion(&sst, &self.region) {
                 error!(
                      "ingest fail";
                      "region_id" => self.region_id(),
@@ -1437,13 +1442,14 @@ impl ApplyDelegate {
                      "err" => ?e
                 );
                 // This file is not valid, we can delete it here.
-                let _ = ctx.importer.delete(sst);
-                panic!();
-            });
+                let _ = ctx.importer.delete(&sst);
+                // For now just ignore the error, it only costs an extra persist.
+                return vec![];
+            }
 
             let snap = ctx
                 .importer
-                .gen_snapshot_from_sst(sst, &ctx.engines.kv)
+                .gen_snapshot_from_sst(&sst, &ctx.engines.kv)
                 .unwrap_or_else(|e| {
                     // If this failed, it means that the file is corrupted or something
                     // is wrong with the engine, but we can do nothing about that.
@@ -1457,6 +1463,8 @@ impl ApplyDelegate {
             } else {
                 unreachable!()
             }
+
+            ingested_ssts.push(sst)
         }
 
         let lock_cf_snap_kv_data = invoke::gen_snap_kv_data(&lock_cf_snap);
@@ -1471,6 +1479,8 @@ impl ApplyDelegate {
             ctx.exec_ctx.as_ref().unwrap().index,
             ctx.exec_ctx.as_ref().unwrap().term,
         );
+
+        ingested_ssts
     }
 
     fn handle_ingest_sst(

@@ -73,11 +73,14 @@ impl<Router: RaftStoreRouter> ImportSst for ImportSSTService<Router> {
         let timer = Instant::now_coarse();
 
         let res = {
-            let mut switcher = self.switcher.lock().unwrap();
-            match req.get_mode() {
-                SwitchMode::Normal => switcher.enter_normal_mode(&self.engine),
-                SwitchMode::Import => switcher.enter_import_mode(&self.engine),
-            }
+            // TODO TiFlash engine does not support switch rpc.
+            //
+            // let mut switcher = self.switcher.lock().unwrap();
+            // match req.get_mode() {
+            //     SwitchMode::Normal => switcher.enter_normal_mode(&self.engine),
+            //     SwitchMode::Import => switcher.enter_import_mode(&self.engine),
+            // }
+            Ok(())
         };
         match res {
             Ok(_) => info!("switch mode"; "mode" => ?req.get_mode()),
