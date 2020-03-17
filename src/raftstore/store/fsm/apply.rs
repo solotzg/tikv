@@ -351,6 +351,17 @@ impl ApplyContext {
         self.cbs.push(ApplyCallback::new(delegate.region.clone()));
     }
 
+    /// Commits all changes have done for delegate. `persistent` indicates whether
+    /// write the changes into rocksdb.
+    ///
+    /// This call is valid only when it's between a `prepare_for` and `finish_for`.
+    pub fn commit(&mut self, delegate: &mut ApplyDelegate) {
+        delegate.write_apply_state(&self.engines, self.kv_wb.as_mut().unwrap());
+        // last_applied_index doesn't need to be updated, set persistent to true will
+        // force it call `prepare_for` automatically.
+        self.commit_opt(delegate, true);
+    }
+
     fn commit_opt(&mut self, delegate: &mut ApplyDelegate, persistent: bool) {
         delegate.update_metrics(self);
         if persistent {
@@ -772,6 +783,15 @@ impl ApplyDelegate {
 
         if !data.is_empty() {
             let cmd = util::parse_data_at(data, index, &self.tag);
+
+            if should_write_to_engine(&cmd, apply_ctx.kv_wb().count()) {
+                apply_ctx.commit(self);
+                if self.written {
+                    return ApplyResult::Yield;
+                }
+                self.written = true;
+            }
+
             return self.process_raft_cmd(apply_ctx, index, term, cmd);
         }
 

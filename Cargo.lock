@@ -76,9 +76,9 @@ dependencies = [
 
 [[package]]
 name = "async-speed-limit"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8960ff0e84c4330f6d3d882fad4a3d292cdb1729b1acbc1c22dab0af0f77e6f1"
+checksum = "18c4fde11fd6a6f244541acc8df7dda88f346363e70f52f8ea4dd66e299c815c"
 dependencies = [
  "futures-core",
  "futures-io",
@@ -144,6 +144,40 @@ checksum = "bff67d0c06556c0b8e6b5f090f0eac52d950d9dfd1d35ba04e4ca3543eaf6a7e"
 dependencies = [
  "cc",
  "libc",
+]
+
+[[package]]
+name = "backup"
+version = "0.0.1"
+dependencies = [
+ "crc64fast",
+ "engine",
+ "external_storage",
+ "failure",
+ "futures 0.1.29",
+ "futures-executor",
+ "futures-util",
+ "grpcio",
+ "hex 0.3.2",
+ "kvproto",
+ "lazy_static 1.4.0",
+ "prometheus 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "protobuf",
+ "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rand 0.6.5",
+ "serde",
+ "serde_derive",
+ "slog",
+ "slog-global",
+ "tempfile",
+ "test_raftstore",
+ "test_util",
+ "tikv",
+ "tikv_alloc",
+ "tikv_util",
+ "tokio-threadpool",
+ "url 2.1.0",
+ "uuid 0.6.5",
 ]
 
 [[package]]
@@ -866,7 +900,7 @@ dependencies = [
  "prometheus 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "protobuf",
  "quick-error 1.2.2",
- "raft",
+ "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rocksdb",
  "serde",
  "serde_derive",
@@ -1171,9 +1205,9 @@ checksum = "0bae52d6b29cf440e298856fec3965ee6fa71b06aa7495178615953fd669e5f9"
 
 [[package]]
 name = "futures-timer"
-version = "2.0.2"
+version = "3.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1de7508b218029b0f01662ed8f61b1c964b3ae99d6f25462d0f55a595109df6"
+checksum = "e64b03909df88034c26dc1547e8970b91f98bdb65165d6a4e9110d94263dbb2c"
 
 [[package]]
 name = "futures-util"
@@ -1610,7 +1644,7 @@ dependencies = [
  "prost-derive 0.4.0",
  "protobuf",
  "protobuf-build",
- "raft",
+ "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -2617,8 +2651,7 @@ dependencies = [
 [[package]]
 name = "raft"
 version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43648985159f2c4c25f934182a63b0dd4c5cc06a5ae96e5d40e12c3a3785abde"
+source = "git+https://github.com/tikv/raft-rs?rev=9782199fa6318f94bf0974129664d974b03f8f11#9782199fa6318f94bf0974129664d974b03f8f11"
 dependencies = [
  "fxhash",
  "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -2626,6 +2659,13 @@ dependencies = [
  "quick-error 1.2.2",
  "rand 0.5.5",
 ]
+
+[[package]]
+name = "raft"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43648985159f2c4c25f934182a63b0dd4c5cc06a5ae96e5d40e12c3a3785abde"
+replace = "raft 0.4.3 (git+https://github.com/tikv/raft-rs?rev=9782199fa6318f94bf0974129664d974b03f8f11)"
 
 [[package]]
 name = "rand"
@@ -3661,6 +3701,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_raftstore"
+version = "0.0.1"
+dependencies = [
+ "engine",
+ "futures 0.1.29",
+ "grpcio",
+ "hex 0.3.2",
+ "kvproto",
+ "protobuf",
+ "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rand 0.6.5",
+ "slog",
+ "slog-global",
+ "tempdir",
+ "tikv",
+ "tikv_util",
+ "tokio-threadpool",
+ "tokio-timer",
+]
+
+[[package]]
+name = "test_util"
+version = "0.0.1"
+dependencies = [
+ "rand 0.6.5",
+ "rand_isaac",
+ "slog",
+ "tikv_alloc",
+ "tikv_util",
+ "time",
+]
+
+[[package]]
 name = "textwrap"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3715,7 +3788,7 @@ dependencies = [
  "log 0.3.9 (registry+https://github.com/rust-lang/crates.io-index)",
  "nix 0.11.0",
  "protobuf",
- "raft",
+ "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.6.5",
  "serde",
  "serde_json",
@@ -3788,7 +3861,7 @@ dependencies = [
  "prometheus-static-metric",
  "protobuf",
  "quick-error 1.2.2",
- "raft",
+ "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.6.5",
  "rand_xorshift",
  "regex",
@@ -3864,7 +3937,7 @@ dependencies = [
  "prometheus-static-metric",
  "protobuf",
  "quick-error 1.2.2",
- "raft",
+ "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.6.5",
  "regex",
  "serde",
