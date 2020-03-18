@@ -327,8 +327,8 @@ impl Snap {
         cf_file: &CfFile,
         region: &Region,
         abort: Arc<AtomicUsize>,
-        lock_cf_snap: &mut invoke::SnapKVData,
-    ) -> Result<()> {
+    ) -> Result<invoke::SnapshotKV> {
+        let mut lock_cf_snap = invoke::SnapshotKV::default();
         if plain_file_used(cf_file.cf) {
             let file = box_try!(File::open(&cf_file.path));
 
@@ -344,7 +344,7 @@ impl Snap {
                 let ori_val = box_try!(decoder.decode_compact_bytes());
                 lock_cf_snap.push_back((ori_key.to_vec(), ori_val.to_vec()));
             }
-            Ok(())
+            Ok(lock_cf_snap)
         } else {
             unreachable!()
         }

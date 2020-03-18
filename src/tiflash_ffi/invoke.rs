@@ -6,7 +6,8 @@ use std::collections::VecDeque;
 
 type TiFlashServerPtr = *const u8;
 type RegionId = u64;
-pub type SnapKVData = VecDeque<(Vec<u8>, Vec<u8>)>;
+pub type SnapshotKV = VecDeque<(Vec<u8>, Vec<u8>)>;
+pub type SnapshotKVView = (Vec<BaseBuffView>, Vec<BaseBuffView>);
 
 pub enum TiFlashApplyRes {
     None,
@@ -30,12 +31,8 @@ pub struct TiFlashRaftProxy {
     pub check_sum: u64,
 }
 
-pub struct SnapshotData {
-    _data: (Vec<BaseBuffView>, Vec<BaseBuffView>),
-    pub view: SnapshotDataView,
-}
-
-pub fn gen_snap_kv_data_from_sst(cf_file_path: &str, cf_snap: &mut SnapKVData) {
+pub fn gen_snap_kv_data_from_sst(cf_file_path: &str) -> SnapshotKV {
+    let mut cf_snap = SnapshotKV::new();
     let mut sst = SstFileReader::new(ColumnFamilyOptions::default());
     sst.open(cf_file_path).unwrap();
     {
@@ -53,6 +50,7 @@ pub fn gen_snap_kv_data_from_sst(cf_file_path: &str, cf_snap: &mut SnapKVData) {
             }
         }
     }
+    cf_snap
 }
 
 pub enum WriteCmdType {
@@ -60,6 +58,7 @@ pub enum WriteCmdType {
     Del,
 }
 
+#[derive(Copy, Clone)]
 pub enum WriteCmdCf {
     Lock,
     Write,
@@ -158,7 +157,7 @@ impl WriteCmds {
     }
 }
 
-pub fn gen_snap_kv_data(snap: &SnapKVData) -> SnapshotData {
+pub fn gen_snap_kv_data_view(snap: &SnapshotKV) -> SnapshotKVView {
     let mut keys = Vec::<BaseBuffView>::with_capacity(snap.len());
     let mut vals = Vec::<BaseBuffView>::with_capacity(snap.len());
 
@@ -172,24 +171,59 @@ pub fn gen_snap_kv_data(snap: &SnapKVData) -> SnapshotData {
             len: v.len() as u64,
         });
     }
-    let keys_ptr = keys.as_ptr();
-    let keys_len = keys.len();
-    let vals_ptr = vals.as_ptr();
-    SnapshotData {
-        _data: (keys, vals),
-        view: SnapshotDataView {
-            keys: keys_ptr,
-            vals: vals_ptr,
-            len: keys_len as u64,
-        },
-    }
+
+    (keys, vals)
 }
 
 #[repr(C)]
-pub struct SnapshotDataView {
+pub struct SnapshotView {
     keys: *const BaseBuffView,
     vals: *const BaseBuffView,
+    cf: u8,
     len: u64,
+}
+
+#[repr(C)]
+pub struct SnapshotViewArray {
+    views: *const SnapshotView,
+    len: u64,
+}
+
+#[derive(Default)]
+pub struct SnapshotHelper {
+    cf_snaps: Vec<(WriteCmdCf, SnapshotKV)>,
+    kv_view: Vec<SnapshotKVView>,
+    snap_view: Vec<SnapshotView>,
+}
+
+impl SnapshotHelper {
+    pub fn add_cf_snap(&mut self, cf_type: WriteCmdCf, snap_kv: SnapshotKV) {
+        self.cf_snaps.push((cf_type, snap_kv));
+    }
+
+    pub fn gen_snapshot_view(&mut self) -> SnapshotViewArray {
+        let len = self.cf_snaps.len();
+        self.kv_view.clear();
+        self.snap_view.clear();
+
+        for i in 0..len {
+            self.kv_view
+                .push(gen_snap_kv_data_view(&self.cf_snaps[i].1));
+        }
+
+        for i in 0..len {
+            self.snap_view.push(SnapshotView {
+                keys: self.kv_view[i].0.as_ptr(),
+                vals: self.kv_view[i].1.as_ptr(),
+                len: self.kv_view[i].0.len() as u64,
+                cf: self.cf_snaps[i].0.clone().into(),
+            });
+        }
+        SnapshotViewArray {
+            views: self.snap_view.as_ptr(),
+            len: self.snap_view.len() as u64,
+        }
+    }
 }
 
 #[repr(C)]
@@ -253,18 +287,12 @@ pub struct TiFlashServerHelper {
     handle_write_raft_cmd: extern "C" fn(TiFlashServerPtr, WriteCmdsView, RaftCmdHeader) -> u32,
     handle_admin_raft_cmd:
         extern "C" fn(TiFlashServerPtr, BaseBuffView, BaseBuffView, RaftCmdHeader) -> u32,
-    handle_apply_snapshot: extern "C" fn(
-        TiFlashServerPtr,
-        BaseBuffView,
-        u64,
-        SnapshotDataView,
-        SnapshotDataView,
-        SnapshotDataView,
-        u64,
-        u64,
-    ),
+    handle_apply_snapshot:
+        extern "C" fn(TiFlashServerPtr, BaseBuffView, u64, SnapshotViewArray, u64, u64),
     atomic_update_proxy: extern "C" fn(TiFlashServerPtr, *const TiFlashRaftProxy),
     handle_destroy: extern "C" fn(TiFlashServerPtr, RegionId),
+    handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader),
+
     //
     magic_number: u32,
     version: u32,
@@ -299,7 +327,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 2;
+        const VERSION: u32 = 3;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
@@ -335,9 +363,7 @@ impl TiFlashServerHelper {
         &self,
         region: &metapb::Region,
         peer_id: u64,
-        lock_cf_snap: SnapshotDataView,
-        write_cf_snap: SnapshotDataView,
-        default_cf_snap: SnapshotDataView,
+        snaps: SnapshotViewArray,
         index: u64,
         term: u64,
     ) {
@@ -345,12 +371,14 @@ impl TiFlashServerHelper {
             self.inner,
             ProtoMsgBaseBuff::new(region).buff_view,
             peer_id,
-            lock_cf_snap,
-            write_cf_snap,
-            default_cf_snap,
+            snaps,
             index,
             term,
         );
+    }
+
+    pub fn handle_ingest_sst(&self, snaps: SnapshotViewArray, header: RaftCmdHeader) {
+        (self.handle_ingest_sst)(self.inner, snaps, header);
     }
 
     pub fn handle_destroy(&self, region_id: RegionId) {

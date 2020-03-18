@@ -72,13 +72,7 @@ impl<Router: RaftStoreRouter> ImportSst for ImportSSTService<Router> {
         let label = "switch_mode";
         let timer = Instant::now_coarse();
 
-        let res = {
-            let mut switcher = self.switcher.lock().unwrap();
-            match req.get_mode() {
-                SwitchMode::Normal => switcher.enter_normal_mode(&self.engine),
-                SwitchMode::Import => switcher.enter_import_mode(&self.engine),
-            }
-        };
+        let res = { Ok(()) };
         match res {
             Ok(_) => info!("switch mode"; "mode" => ?req.get_mode()),
             Err(ref e) => error!("switch mode failed"; "mode" => ?req.get_mode(), "err" => %e),

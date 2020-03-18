@@ -84,7 +84,7 @@ impl SSTImporter {
         }
     }
 
-    pub fn gen_snapshot_from_sst(&self, meta: &SSTMeta, db: &DB) -> Result<invoke::SnapKVData> {
+    pub fn gen_snapshot_from_sst(&self, meta: &SSTMeta, db: &DB) -> Result<invoke::SnapshotKV> {
         match self.dir.gen_snapshot_from_sst(meta, db) {
             Ok(s) => {
                 info!("gen snapshot from sst"; "meta" => ?meta);
@@ -426,12 +426,11 @@ impl ImportDir {
         Ok(())
     }
 
-    fn gen_snapshot_from_sst(&self, meta: &SSTMeta, db: &DB) -> Result<invoke::SnapKVData> {
+    fn gen_snapshot_from_sst(&self, meta: &SSTMeta, db: &DB) -> Result<invoke::SnapshotKV> {
         let start = Instant::now();
         let path = self.pre_ingest(meta, db)?;
 
-        let mut snap = invoke::SnapKVData::new();
-        gen_snap_kv_data_from_sst(path.clone.to_str().unwrap(), &mut snap);
+        let snap = gen_snap_kv_data_from_sst(path.clone.to_str().unwrap());
 
         IMPORTER_INGEST_DURATION
             .with_label_values(&["ingest"])

@@ -55,7 +55,7 @@ use super::metrics::*;
 use super::super::RegionTask;
 use crate::tiflash_ffi::invoke;
 use crate::tiflash_ffi::invoke::{
-    get_tiflash_server_helper, RaftCmdHeader, TiFlashApplyRes, WriteCmdType, WriteCmds,
+    get_tiflash_server_helper, RaftCmdHeader, TiFlashApplyRes, WriteCmdCf, WriteCmdType, WriteCmds,
 };
 
 const WRITE_BATCH_MAX_KEYS: usize = 128;
@@ -1399,15 +1399,14 @@ impl ApplyDelegate {
     }
 
     fn handle_ingest_sst_for_tiflash(&mut self, ctx: &ApplyContext, ssts: &Vec<SSTMeta>) {
-        let lock_cf_snap = invoke::SnapKVData::new();
-        let mut write_cf_snap = invoke::SnapKVData::new();
-        let mut default_cf_snap = invoke::SnapKVData::new();
+        let mut snapshot_helper = invoke::SnapshotHelper::default();
 
         for sst in ssts {
             if sst.get_cf_name() == CF_LOCK {
                 panic!("should not ingest sst of lock cf");
             }
-            check_sst_for_ingestion(sst, &self.region).unwrap_or_else(|e| {
+
+            if let Err(e) = check_sst_for_ingestion(sst, &self.region) {
                 error!(
                      "ingest fail";
                      "region_id" => self.region_id(),
@@ -1418,8 +1417,8 @@ impl ApplyDelegate {
                 );
                 // This file is not valid, we can delete it here.
                 let _ = ctx.importer.delete(sst);
-                panic!();
-            });
+                continue;
+            }
 
             let snap = ctx
                 .importer
@@ -1431,25 +1430,21 @@ impl ApplyDelegate {
                 });
 
             if sst.get_cf_name() == CF_WRITE {
-                write_cf_snap = snap;
+                snapshot_helper.add_cf_snap(WriteCmdCf::Write, snap);
             } else if sst.get_cf_name() == CF_DEFAULT {
-                default_cf_snap = snap;
+                snapshot_helper.add_cf_snap(WriteCmdCf::Default, snap);
             } else {
                 unreachable!()
             }
         }
 
-        let lock_cf_snap_kv_data = invoke::gen_snap_kv_data(&lock_cf_snap);
-        let write_cf_snap_kv_data = invoke::gen_snap_kv_data(&write_cf_snap);
-        let default_cf_snap_kv_data = invoke::gen_snap_kv_data(&default_cf_snap);
-        get_tiflash_server_helper().handle_apply_snapshot(
-            &self.region,
-            self.id,
-            lock_cf_snap_kv_data.view,
-            write_cf_snap_kv_data.view,
-            default_cf_snap_kv_data.view,
-            ctx.exec_ctx.as_ref().unwrap().index,
-            ctx.exec_ctx.as_ref().unwrap().term,
+        get_tiflash_server_helper().handle_ingest_sst(
+            snapshot_helper.gen_snapshot_view(),
+            RaftCmdHeader::new(
+                self.region.get_id(),
+                ctx.exec_ctx.as_ref().unwrap().index,
+                ctx.exec_ctx.as_ref().unwrap().term,
+            ),
         );
     }
 

@@ -334,9 +334,8 @@ impl<R: CasualRouter> SnapContext<R> {
                 return Err(box_err!("missing snapshot file {}", s.path()));
             }
             check_abort(&abort)?;
-            let mut lock_cf_snap = invoke::SnapKVData::new();
-            let mut write_cf_snap = invoke::SnapKVData::new();
-            let mut default_cf_snap = invoke::SnapKVData::new();
+
+            let mut snapshot_helper = invoke::SnapshotHelper::default();
 
             for cf_file in s.get_cf_files() {
                 if cf_file.size == 0 {
@@ -344,36 +343,37 @@ impl<R: CasualRouter> SnapContext<R> {
                     continue;
                 }
 
-                if cf_file.cf == engine::CF_LOCK {
-                    s.read_lock_cf_file(cf_file, &region, Arc::clone(&abort), &mut lock_cf_snap)?;
-                    continue;
-                }
-
-                let cf_snap_ref = if cf_file.cf == engine::CF_DEFAULT {
-                    &mut default_cf_snap
-                } else if cf_file.cf == engine::CF_WRITE {
-                    &mut write_cf_snap
+                let (cf_type, snap_kv) = if cf_file.cf == engine::CF_LOCK {
+                    (
+                        invoke::WriteCmdCf::Lock,
+                        s.read_lock_cf_file(cf_file, &region, Arc::clone(&abort))
+                            .unwrap(),
+                    )
                 } else {
-                    unreachable!()
+                    let cf_type = if cf_file.cf == engine::CF_DEFAULT {
+                        invoke::WriteCmdCf::Default
+                    } else if cf_file.cf == engine::CF_WRITE {
+                        invoke::WriteCmdCf::Write
+                    } else {
+                        unreachable!()
+                    };
+                    (
+                        cf_type,
+                        gen_snap_kv_data_from_sst(cf_file.path.to_str().unwrap()),
+                    )
                 };
 
-                gen_snap_kv_data_from_sst(cf_file.path.to_str().unwrap(), cf_snap_ref);
-
-                for kv in cf_snap_ref {
+                for kv in &snap_kv {
                     check_key_in_region(kv.0.as_ref(), &region).unwrap();
                 }
-            }
 
-            let lock_cf_snap_kv_data = invoke::gen_snap_kv_data(&lock_cf_snap);
-            let write_cf_snap_kv_data = invoke::gen_snap_kv_data(&write_cf_snap);
-            let default_cf_snap_kv_data = invoke::gen_snap_kv_data(&default_cf_snap);
+                snapshot_helper.add_cf_snap(cf_type, snap_kv);
+            }
 
             get_tiflash_server_helper().handle_apply_snapshot(
                 &region,
                 peer_id,
-                lock_cf_snap_kv_data.view,
-                write_cf_snap_kv_data.view,
-                default_cf_snap_kv_data.view,
+                snapshot_helper.gen_snapshot_view(),
                 idx,
                 term,
             );
