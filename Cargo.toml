@@ -45,7 +45,6 @@ crc32fast = "1.2"
 crc64fast = "0.1"
 fs2 = "0.4"
 protobuf = "~2.0"
-nix = "0.11"
 utime = "0.2"
 chrono = "0.4"
 chrono-tz = "0.5.1"
@@ -131,9 +130,6 @@ panic_hook = { path = "components/panic_hook" }
 # of `real_blackbox` feature.
 criterion = { version = "0.2.11", features=['real_blackbox'] }
 arrow = "0.10.0"
-
-[target.'cfg(unix)'.dependencies]
-signal = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procinfo = { git = "https://github.com/tikv/procinfo-rs" }

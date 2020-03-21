@@ -292,6 +292,7 @@ pub struct TiFlashServerHelper {
     atomic_update_proxy: extern "C" fn(TiFlashServerPtr, *const TiFlashRaftProxy),
     handle_destroy: extern "C" fn(TiFlashServerPtr, RegionId),
     handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader),
+    handle_check_terminated: extern "C" fn(TiFlashServerPtr) -> u8,
 
     //
     magic_number: u32,
@@ -327,7 +328,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 3;
+        const VERSION: u32 = 4;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
@@ -383,5 +384,9 @@ impl TiFlashServerHelper {
 
     pub fn handle_destroy(&self, region_id: RegionId) {
         (self.handle_destroy)(self.inner, region_id);
+    }
+
+    pub fn handle_check_terminated(&self) -> bool {
+        (self.handle_check_terminated)(self.inner) == 1
     }
 }
