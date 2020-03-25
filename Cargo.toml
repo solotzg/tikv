@@ -62,6 +62,10 @@ tikv_alloc = { path = "components/tikv_alloc", default-features = false }
 tokio-core = "0.1"
 tokio-timer = "0.2"
 tokio-executor = "0.1"
+tokio-tcp = "0.1"
+tokio-openssl = "0.2"
+tokio-io = "0.1"
+openssl = "0.10"
 serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"
@@ -130,6 +134,7 @@ panic_hook = { path = "components/panic_hook" }
 # of `real_blackbox` feature.
 criterion = { version = "0.2.11", features=['real_blackbox'] }
 arrow = "0.10.0"
+hyper-openssl = "0.7"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procinfo = { git = "https://github.com/tikv/procinfo-rs" }
