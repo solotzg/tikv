@@ -968,6 +968,16 @@ impl ApplyDelegate {
                         "err" => ?e
                     ),
                 }
+
+                {
+                    // hacked by solotzg.
+                    let cmds = WriteCmds::new();
+                    get_tiflash_server_helper().handle_write_raft_cmd(
+                        &cmds,
+                        RaftCmdHeader::new(self.region.get_id(), index, term),
+                    );
+                }
+
                 (
                     cmd_resp::new_error(e),
                     ApplyResult::None,
