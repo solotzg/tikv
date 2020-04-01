@@ -491,6 +491,17 @@ pub fn notify_stale_req(term: u64, cb: Callback) {
     cb.invoke_with_response(resp);
 }
 
+fn should_flush_to_engine(cmd: &RaftCmdRequest) -> bool {
+    if cmd.has_admin_request() {
+        match cmd.get_admin_request().get_cmd_type() {
+            // Merge needs to get the latest apply index.
+            AdminCmdType::CommitMerge | AdminCmdType::RollbackMerge => return true,
+            _ => {}
+        }
+    }
+    return false;
+}
+
 /// Checks if a write is needed to be issued before handling the command.
 fn should_write_to_engine(cmd: &RaftCmdRequest, kv_wb_keys: usize) -> bool {
     if cmd.has_admin_request() {
@@ -790,6 +801,11 @@ impl ApplyDelegate {
 
         if !data.is_empty() {
             let cmd = util::parse_data_at(data, index, &self.tag);
+
+            if should_flush_to_engine(&cmd) {
+                apply_ctx.commit_opt(self, true);
+            }
+
             return self.process_raft_cmd(apply_ctx, index, term, cmd);
         }
 
@@ -1010,9 +1026,7 @@ impl ApplyDelegate {
             _ => false,
         };
         if need_write_apply_state {
-            if !self.pending_remove {
-                self.write_apply_state(&ctx.engines, ctx.kv_wb());
-            }
+            self.write_apply_state(&ctx.engines, ctx.kv_wb());
         }
 
         if let ApplyResult::Res(ref exec_result) = exec_result {
