@@ -282,6 +282,9 @@ impl ProtoMsgBaseBuff {
 
 #[repr(C)]
 pub struct TiFlashServerHelper {
+    magic_number: u32,
+    version: u32,
+    //
     inner: TiFlashServerPtr,
     gc_buff: extern "C" fn(*const BaseBuff),
     handle_write_raft_cmd: extern "C" fn(TiFlashServerPtr, WriteCmdsView, RaftCmdHeader) -> u32,
@@ -293,10 +296,6 @@ pub struct TiFlashServerHelper {
     handle_destroy: extern "C" fn(TiFlashServerPtr, RegionId),
     handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader),
     handle_check_terminated: extern "C" fn(TiFlashServerPtr) -> u8,
-
-    //
-    magic_number: u32,
-    version: u32,
 }
 
 unsafe impl Send for TiFlashServerHelper {}

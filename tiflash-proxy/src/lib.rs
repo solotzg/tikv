@@ -27,12 +27,10 @@ pub use tiflash_raft_proxy::run_tiflash_proxy_ffi;
 fn proxy_version_info() -> String {
     let fallback = "Unknown (env var does not exist when building)";
     format!(
-        "Release Version:   {}\
-         \nGit Commit Hash:   {}\
+        "Git Commit Hash:   {}\
          \nGit Commit Branch: {}\
          \nUTC Build Time:    {}\
          \nRust Version:      {}",
-        tikv::cargo_pkg_version(),
         option_env!("PROXY_BUILD_GIT_HASH").unwrap_or(fallback),
         option_env!("PROXY_BUILD_GIT_BRANCH").unwrap_or(fallback),
         option_env!("PROXY_BUILD_TIME").unwrap_or(fallback),

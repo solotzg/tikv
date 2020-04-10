@@ -158,6 +158,20 @@ pub unsafe extern "C" fn run_tiflash_proxy_ffi(
                      leaves it empty will disable Prometheus push",
                 ),
         )
+        .arg(
+            Arg::with_name("tiflash-version")
+                .long("tiflash-version")
+                .help("Set tiflash version")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("tiflash-git-hash")
+                .long("tiflash-git-hash")
+                .help("Set tiflash git hash")
+                .required(true)
+                .takes_value(true),
+        )
         .get_matches_from(args);
 
     if matches.is_present("print-sample-config") {

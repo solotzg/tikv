@@ -92,7 +92,18 @@ where
         } else {
             panic!("tiflash engine addr is empty");
         }
-        store.set_version(crate::cargo_pkg_version());
+
+        if !cfg.tiflash_version.is_empty() {
+            store.set_version(cfg.tiflash_version.clone());
+        }
+        if !cfg.status_addr.is_empty() {
+            store.set_status_address(cfg.status_addr.clone());
+        }
+        if !cfg.tiflash_git_hash.is_empty() {
+            store.set_git_hash(cfg.tiflash_git_hash.clone());
+        }
+
+        store.set_start_timestamp(chrono::Local::now().timestamp());
 
         let mut labels = Vec::new();
         for (k, v) in &cfg.labels {
