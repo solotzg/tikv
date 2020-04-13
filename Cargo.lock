@@ -1245,25 +1245,12 @@ checksum = "9b919933a397b79c37e33b77bb2aa3dc8eb6e165ad809e58ff75bc7db2e34574"
 
 [[package]]
 name = "grpcio"
-version = "0.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ac757a85603e4f8c40a9f94be06a5ad412acab80b39b4e8895ca931b6619910"
-dependencies = [
- "futures 0.1.29",
- "grpcio-sys 0.4.7",
- "libc",
- "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
- "protobuf",
-]
-
-[[package]]
-name = "grpcio"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a779eb8dc982fa4a552eb21e2962b2d927ea9037cb21be8645034c9e79ee4a29"
 dependencies = [
  "futures 0.1.29",
- "grpcio-sys 0.5.2",
+ "grpcio-sys",
  "libc",
  "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "protobuf",
@@ -1277,18 +1264,6 @@ checksum = "373a14f0f994d4c235770f4bb5558be00626844db130a82a70142b8fc5996fc3"
 dependencies = [
  "protobuf",
  "protobuf-codegen",
-]
-
-[[package]]
-name = "grpcio-sys"
-version = "0.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b2f22fb0327f153acccedbe91894dd0fb15bb6f202d8195665cd206af0402b0"
-dependencies = [
- "cc",
- "cmake",
- "libc",
- "pkg-config",
 ]
 
 [[package]]
@@ -1652,11 +1627,11 @@ dependencies = [
 [[package]]
 name = "kvproto"
 version = "0.0.1"
-source = "git+https://github.com/pingcap/kvproto.git?branch=release-3.1#1750bfeba0d96118b1e532d71e98da413a277155"
+source = "git+https://github.com/pingcap/kvproto.git?branch=release-3.1#c211b473fe439e5635e63471714ab7ec758b5071"
 dependencies = [
  "bytes 0.4.12",
  "futures 0.1.29",
- "grpcio 0.4.7",
+ "grpcio",
  "hex 0.3.2",
  "prost 0.4.0",
  "prost-derive 0.4.0",
@@ -3781,7 +3756,7 @@ dependencies = [
  "fail 0.3.0",
  "fs2",
  "futures 0.1.29",
- "grpcio 0.5.1",
+ "grpcio",
  "hex 0.3.2",
  "kvproto",
  "libc",
@@ -3835,7 +3810,7 @@ dependencies = [
  "futures-cpupool",
  "futures-executor",
  "futures-util",
- "grpcio 0.5.1",
+ "grpcio",
  "hashbrown",
  "hex 0.3.2",
  "hyper 0.12.35",
@@ -3926,7 +3901,7 @@ dependencies = [
  "crossbeam 0.5.0",
  "futures 0.1.29",
  "futures-cpupool",
- "grpcio 0.5.1",
+ "grpcio",
  "hashbrown",
  "hex 0.3.2",
  "indexmap",
