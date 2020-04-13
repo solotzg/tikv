@@ -3709,6 +3709,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_util"
+version = "0.0.1"
+dependencies = [
+ "grpcio",
+ "rand 0.6.5",
+ "rand_isaac",
+ "slog",
+ "tikv_alloc",
+ "tikv_util",
+ "time",
+]
+
+[[package]]
 name = "textwrap"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3855,6 +3868,7 @@ dependencies = [
  "smallvec",
  "sys-info",
  "tempdir",
+ "test_util",
  "tikv_alloc",
  "tikv_util",
  "time",
