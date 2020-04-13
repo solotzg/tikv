@@ -31,6 +31,7 @@ use crate::raftstore::store::Callback;
 use crate::raftstore::store::StoreInfo;
 use crate::raftstore::store::{CasualMessage, PeerMsg, RaftCommand, RaftRouter, SignificantMsg};
 use crate::storage::FlowStatistics;
+use crate::tiflash_ffi::invoke::get_tiflash_server_helper;
 use tikv_util::collections::HashMap;
 use tikv_util::metrics::ThreadInfoStatistics;
 use tikv_util::time::time_now_sec;
@@ -489,43 +490,16 @@ impl<T: PdClient> Runner<T> {
         mut stats: pdpb::StoreStats,
         store_info: StoreInfo,
     ) {
-        let disk_stats = match fs2::statvfs(store_info.engine.path()) {
-            Err(e) => {
-                error!(
-                    "get disk stat for rocksdb failed";
-                    "engine_path" => store_info.engine.path(),
-                    "err" => ?e
-                );
-                return;
-            }
-            Ok(stats) => stats,
-        };
+        let fs_stats = get_tiflash_server_helper().handle_compute_fs_stats();
 
-        let disk_cap = disk_stats.total_space();
-        let capacity = if store_info.capacity == 0 || disk_cap < store_info.capacity {
-            disk_cap
-        } else {
-            store_info.capacity
-        };
-        stats.set_capacity(capacity);
-
-        // already include size of snapshot files
-        let used_size =
-            stats.get_used_size() + get_engine_used_size(Arc::clone(&store_info.engine));
-        stats.set_used_size(used_size);
-
-        let mut available = if capacity > used_size {
-            capacity - used_size
-        } else {
-            warn!("no available space");
-            0
-        };
-
-        // We only care about rocksdb SST file size, so we should check disk available here.
-        if available > disk_stats.free_space() {
-            available = disk_stats.free_space();
+        if fs_stats.ok == 0 {
+            return;
         }
 
+        let capacity = fs_stats.capacity_size;
+        let available = fs_stats.avail_size;
+        stats.set_used_size(fs_stats.used_size);
+        stats.set_capacity(capacity);
         stats.set_available(available);
         stats.set_bytes_read(
             self.store_stat.engine_total_bytes_read - self.store_stat.engine_last_total_bytes_read,

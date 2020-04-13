@@ -281,6 +281,14 @@ impl ProtoMsgBaseBuff {
 }
 
 #[repr(C)]
+pub struct FsStats {
+    pub used_size: u64,
+    pub avail_size: u64,
+    pub capacity_size: u64,
+    pub ok: u8,
+}
+
+#[repr(C)]
 pub struct TiFlashServerHelper {
     magic_number: u32,
     version: u32,
@@ -296,6 +304,7 @@ pub struct TiFlashServerHelper {
     handle_destroy: extern "C" fn(TiFlashServerPtr, RegionId),
     handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader),
     handle_check_terminated: extern "C" fn(TiFlashServerPtr) -> u8,
+    handle_compute_fs_stats: extern "C" fn(TiFlashServerPtr) -> FsStats,
 }
 
 unsafe impl Send for TiFlashServerHelper {}
@@ -311,6 +320,10 @@ pub fn get_tiflash_server_helper_mut() -> &'static mut TiFlashServerHelper {
 }
 
 impl TiFlashServerHelper {
+    pub fn handle_compute_fs_stats(&self) -> FsStats {
+        (self.handle_compute_fs_stats)(self.inner)
+    }
+
     pub fn handle_write_raft_cmd(
         &self,
         cmds: &WriteCmds,
@@ -327,7 +340,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 4;
+        const VERSION: u32 = 5;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
