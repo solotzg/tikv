@@ -727,7 +727,7 @@ where
     ) {
         if !self.is_leader() {
             let status = RpcStatus::new(
-                RpcStatusCode::FailedPrecondition,
+                RpcStatusCode::FAILED_PRECONDITION,
                 Some("I'm not the leader of deadlock detector".to_string()),
             );
             handle.spawn(sink.fail(status).map_err(|_| ()));
@@ -840,7 +840,7 @@ impl deadlock_grpc::Deadlock for Service {
     ) {
         let (cb, f) = paired_future_callback();
         if !self.waiter_mgr_scheduler.dump_wait_table(cb) {
-            let status = RpcStatus::new(RpcStatusCode::ResourceExhausted, None);
+            let status = RpcStatus::new(RpcStatusCode::RESOURCE_EXHAUSTED, None);
             ctx.spawn(sink.fail(status).map_err(|_| ()))
         } else {
             ctx.spawn(
@@ -867,7 +867,7 @@ impl deadlock_grpc::Deadlock for Service {
         let task = Task::DetectRpc { stream, sink };
         if let Err(Stopped(Task::DetectRpc { sink, .. })) = self.detector_scheduler.0.schedule(task)
         {
-            let status = RpcStatus::new(RpcStatusCode::ResourceExhausted, None);
+            let status = RpcStatus::new(RpcStatusCode::RESOURCE_EXHAUSTED, None);
             ctx.spawn(sink.fail(status).map_err(|_| ()));
         }
     }
