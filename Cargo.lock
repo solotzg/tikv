@@ -164,6 +164,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "backup"
+version = "0.0.1"
+dependencies = [
+ "crc64fast",
+ "engine",
+ "external_storage",
+ "failure",
+ "futures 0.1.29",
+ "futures 0.3.1",
+ "futures-executor",
+ "futures-util",
+ "grpcio",
+ "hex 0.3.2",
+ "kvproto",
+ "lazy_static 1.4.0",
+ "prometheus 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "protobuf",
+ "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rand 0.6.5",
+ "serde",
+ "serde_derive",
+ "slog",
+ "slog-global",
+ "tempfile",
+ "test_raftstore",
+ "test_util",
+ "tikv",
+ "tikv_alloc",
+ "tikv_util",
+ "url 2.1.0",
+ "uuid 0.6.5",
+]
+
+[[package]]
 name = "base-x"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3998,6 +4032,27 @@ dependencies = [
  "libc",
  "redox_syscall",
  "redox_termios",
+]
+
+[[package]]
+name = "test_raftstore"
+version = "0.0.1"
+dependencies = [
+ "engine",
+ "futures 0.1.29",
+ "grpcio",
+ "hex 0.3.2",
+ "kvproto",
+ "protobuf",
+ "raft 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rand 0.6.5",
+ "slog",
+ "slog-global",
+ "tempdir",
+ "tikv",
+ "tikv_util",
+ "tokio-threadpool",
+ "tokio-timer",
 ]
 
 [[package]]

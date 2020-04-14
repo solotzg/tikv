@@ -155,6 +155,7 @@ members = [
   "components/log_wrappers",
   "components/tikv_util",
   "components/external_storage",
+  "components/backup",
   "tiflash-proxy",
 ]
 
