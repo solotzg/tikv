@@ -11,7 +11,7 @@ use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 #[cfg(target_os = "linux")]
 use pprof;
 #[cfg(target_os = "linux")]
-use pprof::protos::Message;
+use prost::Message;
 #[cfg(target_os = "linux")]
 use regex::Regex;
 use tokio_io::{AsyncRead, AsyncWrite};
