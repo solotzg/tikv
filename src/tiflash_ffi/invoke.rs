@@ -1,5 +1,5 @@
 use crate::raftstore::store::keys;
-use engine::rocks::{ColumnFamilyOptions, SeekKey, SstFileReader};
+use engine::rocks::{SeekKey, SstReader};
 use engine::{CF_DEFAULT, CF_LOCK, CF_WRITE};
 use kvproto::{metapb, raft_cmdpb};
 use std::collections::VecDeque;
@@ -33,8 +33,7 @@ pub struct TiFlashRaftProxy {
 
 pub fn gen_snap_kv_data_from_sst(cf_file_path: &str) -> SnapshotKV {
     let mut cf_snap = SnapshotKV::new();
-    let mut sst = SstFileReader::new(ColumnFamilyOptions::default());
-    sst.open(cf_file_path).unwrap();
+    let sst = SstReader::open(cf_file_path).unwrap();
     {
         sst.verify_checksum().unwrap();
         let mut it = sst.iter();
