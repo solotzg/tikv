@@ -156,9 +156,7 @@ impl SSTImporter {
 
         // prepare to download the file from the external_storage
         let ext_storage = create_storage(backend)?;
-        let ext_reader = ext_storage
-            .read(name)
-            .map_err(|e| Error::CannotReadExternalStorage(url.to_string(), name.to_owned(), e))?;
+        let ext_reader = ext_storage.read(name);
         let ext_reader = speed_limiter.limit(ext_reader);
 
         // do the I/O copy from external_storage to the local file.
