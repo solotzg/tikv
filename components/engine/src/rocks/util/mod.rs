@@ -29,6 +29,7 @@ use crate::rocks::{
 };
 use crate::{Error, Result, ALL_CFS, CF_DEFAULT};
 use tikv_util::file::calc_crc32;
+use tikv_util::sys::sys_quota::SysQuota;
 
 pub use self::event_listener::EventListener;
 pub use self::metrics_flusher::MetricsFlusher;
@@ -508,7 +509,7 @@ pub fn compact_files_in_range_cf(
 
     let mut opts = CompactionOptions::new();
     opts.set_compression(output_compression);
-    let max_subcompactions = sys_info::cpu_num().unwrap();
+    let max_subcompactions = SysQuota::new().cpu_cores_quota();
     let max_subcompactions = cmp::min(max_subcompactions, 32);
     opts.set_max_subcompactions(max_subcompactions as i32);
     opts.set_output_file_size_limit(output_file_size_limit);
@@ -575,32 +576,36 @@ pub fn validate_sst_for_ingestion<P: AsRef<Path>>(
     let f = File::open(path)?;
 
     let meta = f.metadata()?;
-    if meta.len() != expected_size {
-        return Err(Error::RocksDb(format!(
-            "invalid size {} for {}, expected {}",
-            meta.len(),
-            path,
-            expected_size
-        )));
+    if expected_size > 0 {
+        // check sst file size when expected_size > 0
+        if meta.len() != expected_size {
+            return Err(Error::RocksDb(format!(
+                "invalid size {} for {}, expected {}",
+                meta.len(),
+                path,
+                expected_size
+            )));
+        }
     }
+    if expected_checksum > 0 {
+        let checksum = calc_crc32(path)?;
+        if checksum == expected_checksum {
+            return Ok(());
+        }
 
-    let checksum = calc_crc32(path)?;
-    if checksum == expected_checksum {
-        return Ok(());
-    }
+        // RocksDB may have modified the global seqno.
+        let cf_handle = get_cf_handle(db, cf)?;
+        set_external_sst_file_global_seq_no(db, cf_handle, path, 0)?;
+        f.sync_all()
+            .map_err(|e| format!("sync {}: {:?}", path, e))?;
 
-    // RocksDB may have modified the global seqno.
-    let cf_handle = get_cf_handle(db, cf)?;
-    set_external_sst_file_global_seq_no(db, cf_handle, path, 0)?;
-    f.sync_all()
-        .map_err(|e| format!("sync {}: {:?}", path, e))?;
-
-    let checksum = calc_crc32(path)?;
-    if checksum != expected_checksum {
-        return Err(Error::RocksDb(format!(
-            "invalid checksum {} for {}, expected {}",
-            checksum, path, expected_checksum
-        )));
+        let checksum = calc_crc32(path)?;
+        if checksum != expected_checksum {
+            return Err(Error::RocksDb(format!(
+                "invalid checksum {} for {}, expected {}",
+                checksum, path, expected_checksum
+            )));
+        }
     }
 
     Ok(())

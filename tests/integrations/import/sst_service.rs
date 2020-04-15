@@ -109,6 +109,16 @@ fn test_ingest_sst() {
     let resp = import.ingest(&ingest).unwrap();
     assert!(!resp.has_error());
 
+    // Set crc32 == 0 and length != 0 still ingest success
+    send_upload_sst(&import, &meta, &data).unwrap();
+    let crc32 = meta.get_crc32();
+    meta.set_crc32(0);
+    meta.set_length(data.len() as u64);
+    ingest.set_sst(meta.clone());
+    let resp = import.ingest(&ingest).unwrap();
+    assert!(!resp.has_error());
+    meta.set_crc32(crc32);
+
     // Check ingested kvs
     check_ingested_kvs(&tikv, &ctx, sst_range);
 
@@ -118,8 +128,6 @@ fn test_ingest_sst() {
 
 #[test]
 fn test_download_sst() {
-    use grpcio::{Error, RpcStatus};
-
     let (_cluster, ctx, tikv, import) = new_cluster_and_tikv_import_client();
     let temp_dir = TempDir::new("test_download_sst").unwrap();
 
@@ -135,13 +143,12 @@ fn test_download_sst() {
     download.set_storage_backend(external_storage::make_local_backend(temp_dir.path()));
     download.set_name("missing.sst".to_owned());
 
-    let result = import.download(&download);
-    match &result {
-        Err(Error::RpcFailure(RpcStatus {
-            details: Some(msg), ..
-        })) if msg.contains("CannotReadExternalStorage") => {}
-        _ => panic!("unexpected download reply: {:?}", result),
-    }
+    let result = import.download(&download).unwrap();
+    assert!(
+        result.has_error(),
+        "unexpected download reply: {:?}",
+        result
+    );
 
     // Checks that downloading an empty SST returns OK (but cannot be ingested)
     download.set_name("test.sst".to_owned());

@@ -47,7 +47,9 @@ use tikv_util::worker::Scheduler;
 use super::cmd_resp;
 use super::local_metrics::{RaftMessageMetrics, RaftReadyMetrics};
 use super::metrics::*;
-use super::peer_storage::{write_peer_state, ApplySnapResult, InvokeContext, PeerStorage};
+use super::peer_storage::{
+    write_peer_state, ApplySnapResult, CheckApplyingSnapStatus, InvokeContext, PeerStorage,
+};
 use super::read_queue::{ReadIndexQueue, ReadIndexRequest};
 use super::transport::Transport;
 use super::util::{self, check_region_epoch, is_initial_msg, Lease, LeaseState};
@@ -732,6 +734,7 @@ impl Peer {
             if let LeaseState::Valid = state {
                 let mut resp = eraftpb::Message::default();
                 resp.set_msg_type(MessageType::MsgReadIndexResp);
+                resp.term = self.term();
                 resp.to = m.from;
                 resp.index = self.get_store().committed_index();
                 resp.set_entries(m.take_entries());
@@ -1022,16 +1025,22 @@ impl Peer {
         if self.pending_remove {
             return None;
         }
-        if self.mut_store().check_applying_snap() {
-            // If we continue to handle all the messages, it may cause too many messages because
-            // leader will send all the remaining messages to this follower, which can lead
-            // to full message queue under high load.
-            debug!(
-                "still applying snapshot, skip further handling";
-                "region_id" => self.region_id,
-                "peer_id" => self.peer.get_id(),
-            );
-            return None;
+        match self.mut_store().check_applying_snap() {
+            CheckApplyingSnapStatus::Applying => {
+                // If we continue to handle all the messages, it may cause too many messages because
+                // leader will send all the remaining messages to this follower, which can lead
+                // to full message queue under high load.
+                debug!(
+                    "still applying snapshot, skip further handling";
+                    "region_id" => self.region_id,
+                    "peer_id" => self.peer.get_id(),
+                );
+                return None;
+            }
+            CheckApplyingSnapStatus::Success => {
+                self.post_pending_read_index_on_replica(ctx);
+            }
+            CheckApplyingSnapStatus::Idle => {}
         }
 
         if !self.pending_messages.is_empty() {
@@ -1386,7 +1395,6 @@ impl Peer {
             let uuid = Uuid::from_bytes(state.request_ctx.as_slice()).unwrap();
             (uuid, state.index)
         });
-
         // The follower may lost `ReadIndexResp`, so the pending_reads does not
         // guarantee the orders are consistent with read_states. `advance` will
         // update the `read_index` of read request that before this successful
@@ -1397,14 +1405,14 @@ impl Peer {
             // the function.
             self.pending_reads.advance_replica_reads(states);
             self.post_pending_read_index_on_replica(ctx);
-        } else if self.ready_to_handle_read() {
-            for (uuid, index) in states {
-                let mut read = self.pending_reads.advance_leader_read_and_pop(uuid, index);
-                propose_time = Some(read.renew_lease_time);
-                self.response_read(&mut read, ctx, false);
-            }
         } else {
-            propose_time = self.pending_reads.advance_leader_reads(states);
+            self.pending_reads.advance_leader_reads(states);
+            propose_time = self.pending_reads.last_ready().map(|r| r.renew_lease_time);
+            if self.ready_to_handle_read() {
+                while let Some(mut read) = self.pending_reads.pop_front() {
+                    self.response_read(&mut read, ctx, false);
+                }
+            }
         }
 
         // Note that only after handle read_states can we identify what requests are
@@ -1898,7 +1906,6 @@ impl Peer {
             "request_id" => ?read.id,
             "region_id" => self.region_id,
             "peer_id" => self.peer.get_id(),
-            "uuid" => ?read.id,
         );
     }
 
@@ -2007,7 +2014,6 @@ impl Peer {
             "region_id" => self.region_id,
             "peer_id" => self.peer.get_id(),
             "is_leader" => self.is_leader(),
-            "uuid" => ?id,
         );
 
         // TimeoutNow has been sent out, so we need to propose explicitly to

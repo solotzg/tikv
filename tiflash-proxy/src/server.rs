@@ -39,6 +39,7 @@ use tikv::storage::{self, AutoGCConfig, DEFAULT_ROCKSDB_SUB_DIR};
 use tikv::tiflash_ffi::invoke::{self, get_tiflash_server_helper_mut};
 use tikv_util::check_environment_variables;
 use tikv_util::security::SecurityManager;
+use tikv_util::sys::sys_quota::SysQuota;
 use tikv_util::time::Monitor;
 use tikv_util::worker::FutureWorker;
 
@@ -57,6 +58,9 @@ pub fn run_tikv(mut config: TiKvConfig) {
         "using config";
         "config" => serde_json::to_string(&config).unwrap(),
     );
+
+    // Print resource quota.
+    SysQuota::new().log_quota();
 
     config.write_into_metrics();
     // Do some prepare works before start.
@@ -212,6 +216,7 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
         raft_router.clone(),
         engines.kv.clone(),
         Arc::clone(&importer),
+        security_mgr.clone(),
     );
 
     // Create Debug service.
@@ -219,10 +224,13 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
         engines.clone(),
         raft_router.clone(),
         storage.gc_worker.clone(),
+        security_mgr.clone(),
     );
 
     // Create Deadlock service.
-    let deadlock_service = lock_mgr.as_ref().map(|lm| lm.deadlock_service());
+    let deadlock_service = lock_mgr
+        .as_ref()
+        .map(|lm| lm.deadlock_service(security_mgr.clone()));
 
     // Create server
     let mut server = Server::new(
