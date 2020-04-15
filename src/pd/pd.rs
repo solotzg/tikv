@@ -488,7 +488,7 @@ impl<T: PdClient> Runner<T> {
         &mut self,
         handle: &Handle,
         mut stats: pdpb::StoreStats,
-        store_info: StoreInfo,
+        _store_info: StoreInfo,
     ) {
         let fs_stats = get_tiflash_server_helper().handle_compute_fs_stats();
 

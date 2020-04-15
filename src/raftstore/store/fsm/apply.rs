@@ -2622,10 +2622,6 @@ impl ApplyFsm {
     fn handle_destroy(&mut self, ctx: &mut ApplyContext, d: Destroy) {
         assert_eq!(d.region_id, self.delegate.region_id());
         if !self.delegate.stopped {
-            {
-                // hacked by solotzg
-                get_tiflash_server_helper().handle_destroy(self.delegate.region_id());
-            }
             self.destroy(ctx);
             if d.async_remove {
                 ctx.notifier.notify(

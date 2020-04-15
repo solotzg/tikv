@@ -56,6 +56,7 @@ use crate::raftstore::store::{
     SnapshotDeleter, StoreMsg,
 };
 use crate::raftstore::{Error, Result};
+use crate::tiflash_ffi::invoke::get_tiflash_server_helper;
 
 pub struct DestroyPeerJob {
     pub initialized: bool,
@@ -1309,6 +1310,10 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
             "merged_by_target" => merged_by_target,
         );
         let region_id = self.region_id();
+        {
+            // hacked by solotzg
+            get_tiflash_server_helper().handle_destroy(region_id);
+        }
         // We can't destroy a peer which is applying snapshot.
         assert!(!self.fsm.peer.is_applying_snapshot());
 
