@@ -1,8 +1,10 @@
 use crate::raftstore::store::keys;
+use crate::tiflash_ffi::key_val_if::TiFlashRaftProxyHelper;
 use engine::rocks::{ColumnFamilyOptions, SeekKey, SstFileReader};
 use engine::{CF_DEFAULT, CF_LOCK, CF_WRITE};
 use kvproto::{metapb, raft_cmdpb};
 use std::collections::VecDeque;
+use std::slice;
 
 type TiFlashServerPtr = *const u8;
 type RegionId = u64;
@@ -24,11 +26,6 @@ impl From<u32> for TiFlashApplyRes {
             _ => unreachable!(),
         }
     }
-}
-
-#[repr(C)]
-pub struct TiFlashRaftProxy {
-    pub check_sum: u64,
 }
 
 pub fn gen_snap_kv_data_from_sst(cf_file_path: &str) -> SnapshotKV {
@@ -227,22 +224,15 @@ impl SnapshotHelper {
 }
 
 #[repr(C)]
-pub struct BaseBuff {
-    inner: *const (),
-    data: *const u8,
-    len: u64,
-}
-
-impl Drop for BaseBuff {
-    fn drop(&mut self) {
-        (get_tiflash_server_helper().gc_buff)(self as *mut _ as *const _);
-    }
-}
-
-#[repr(C)]
 pub struct BaseBuffView {
-    data: *const u8,
-    len: u64,
+    pub data: *const u8,
+    pub len: u64,
+}
+
+impl BaseBuffView {
+    pub(crate) fn to_slice(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.data, self.len as usize) }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -294,13 +284,13 @@ pub struct TiFlashServerHelper {
     version: u32,
     //
     inner: TiFlashServerPtr,
-    gc_buff: extern "C" fn(*const BaseBuff),
+    gen_cpp_string: extern "C" fn(BaseBuffView) -> *const u8,
     handle_write_raft_cmd: extern "C" fn(TiFlashServerPtr, WriteCmdsView, RaftCmdHeader) -> u32,
     handle_admin_raft_cmd:
         extern "C" fn(TiFlashServerPtr, BaseBuffView, BaseBuffView, RaftCmdHeader) -> u32,
     handle_apply_snapshot:
         extern "C" fn(TiFlashServerPtr, BaseBuffView, u64, SnapshotViewArray, u64, u64),
-    atomic_update_proxy: extern "C" fn(TiFlashServerPtr, *const TiFlashRaftProxy),
+    atomic_update_proxy: extern "C" fn(TiFlashServerPtr, *const TiFlashRaftProxyHelper),
     handle_destroy: extern "C" fn(TiFlashServerPtr, RegionId),
     handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader),
     handle_check_terminated: extern "C" fn(TiFlashServerPtr) -> u8,
@@ -320,6 +310,10 @@ pub fn get_tiflash_server_helper_mut() -> &'static mut TiFlashServerHelper {
 }
 
 impl TiFlashServerHelper {
+    pub(crate) fn gen_cpp_string(&self, buff: BaseBuffView) -> *const u8 {
+        (self.gen_cpp_string)(buff)
+    }
+
     pub fn handle_compute_fs_stats(&self) -> FsStats {
         (self.handle_compute_fs_stats)(self.inner)
     }
@@ -333,14 +327,14 @@ impl TiFlashServerHelper {
         TiFlashApplyRes::from(res)
     }
 
-    pub unsafe fn atomic_update_proxy(&mut self, proxy: *const TiFlashRaftProxy) {
+    pub unsafe fn atomic_update_proxy(&mut self, proxy: &TiFlashRaftProxyHelper) {
         (self.atomic_update_proxy)(self.inner, proxy);
     }
 
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 5;
+        const VERSION: u32 = 6;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(

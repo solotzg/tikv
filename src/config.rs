@@ -43,7 +43,7 @@ use engine::rocks::util::{
     db_exist, CFOptions, EventListener, FixedPrefixSliceTransform, FixedSuffixSliceTransform,
     NoopSliceTransform,
 };
-use engine::{CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE};
+use engine::{CF_DEFAULT, CF_LOCK, CF_RAFT, CF_TIFLASH, CF_WRITE};
 use tikv_util::config::{self, ReadableDuration, ReadableSize, GB, MB};
 use tikv_util::security::SecurityConfig;
 use tikv_util::sys::sys_quota::SysQuota;
@@ -787,6 +787,7 @@ impl DbConfig {
             CFOptions::new(CF_WRITE, self.writecf.build_opt(cache)),
             // TODO: remove CF_RAFT.
             CFOptions::new(CF_RAFT, self.raftcf.build_opt(cache)),
+            CFOptions::new(CF_TIFLASH, self.writecf.build_opt(cache)),
         ]
     }
 

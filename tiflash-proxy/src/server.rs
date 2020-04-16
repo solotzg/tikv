@@ -36,7 +36,8 @@ use tikv::server::DEFAULT_CLUSTER_ID;
 use tikv::server::{create_raft_storage, Node, Server};
 use tikv::storage::RaftKv;
 use tikv::storage::{self, AutoGCConfig, DEFAULT_ROCKSDB_SUB_DIR};
-use tikv::tiflash_ffi::invoke::{self, get_tiflash_server_helper_mut};
+use tikv::tiflash_ffi::invoke::get_tiflash_server_helper_mut;
+use tikv::tiflash_ffi::{TiFlashRaftProxy, TiFlashRaftProxyHelper};
 use tikv_util::check_environment_variables;
 use tikv_util::security::SecurityManager;
 use tikv_util::sys::sys_quota::SysQuota;
@@ -344,10 +345,16 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
         }
     }
 
-    let proxy = invoke::TiFlashRaftProxy { check_sum: 666 };
+    let proxy = TiFlashRaftProxy {
+        storage: engines.kv.clone(),
+    };
+
+    let proxy_helper = TiFlashRaftProxyHelper::new(&proxy);
+
     unsafe {
-        get_tiflash_server_helper_mut().atomic_update_proxy(&proxy);
+        get_tiflash_server_helper_mut().atomic_update_proxy(&proxy_helper);
     }
+
     signal_handler::handle_signal(Some(engines));
 
     // Stop server.
