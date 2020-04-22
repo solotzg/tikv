@@ -1144,7 +1144,7 @@ impl ApplyDelegate {
 
         let (mut response, mut exec_result) = match cmd_type {
             AdminCmdType::ChangePeer => self.exec_change_peer(ctx, request),
-            AdminCmdType::Split => self.exec_split(ctx, request),
+            AdminCmdType::Split => unreachable!(),
             AdminCmdType::BatchSplit => self.exec_batch_split(ctx, request),
             AdminCmdType::CompactLog => self.exec_compact_log(ctx, request),
             AdminCmdType::TransferLeader => Err(box_err!("transfer leader won't exec")),
@@ -1912,8 +1912,11 @@ impl ApplyDelegate {
             .with_label_values(&["prepare_merge", "success"])
             .inc();
 
+        let mut response = AdminResponse::new();
+        response.mut_split().set_left(region.clone());
+
         Ok((
-            AdminResponse::new(),
+            response,
             ApplyResult::Res(ExecResult::PrepareMerge {
                 region,
                 state: merging_state,
@@ -2062,9 +2065,11 @@ impl ApplyDelegate {
             .with_label_values(&["commit_merge", "success"])
             .inc();
 
-        let resp = AdminResponse::new();
+        let mut response = AdminResponse::new();
+        response.mut_split().set_left(region.clone());
+
         Ok((
-            resp,
+            response,
             ApplyResult::Res(ExecResult::CommitMerge {
                 region,
                 source: source_region.to_owned(),
@@ -2109,9 +2114,12 @@ impl ApplyDelegate {
         PEER_ADMIN_CMD_COUNTER_VEC
             .with_label_values(&["rollback_merge", "success"])
             .inc();
-        let resp = AdminResponse::new();
+
+        let mut response = AdminResponse::new();
+        response.mut_split().set_left(region.clone());
+
         Ok((
-            resp,
+            response,
             ApplyResult::Res(ExecResult::RollbackMerge {
                 region,
                 commit: rollback.get_commit(),
