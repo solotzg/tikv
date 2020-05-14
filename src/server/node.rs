@@ -103,6 +103,12 @@ where
             store.set_git_hash(cfg.tiflash_git_hash.clone());
         }
 
+        if let Ok(path) = std::env::current_exe() {
+            if let Some(path) = path.parent() {
+                store.set_deploy_path(path.to_string_lossy().to_string());
+            }
+        };
+
         store.set_start_timestamp(chrono::Local::now().timestamp());
 
         let mut labels = Vec::new();

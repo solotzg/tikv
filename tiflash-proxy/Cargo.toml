@@ -41,7 +41,7 @@ grpcio = { version = "0.5", features = [ "openssl-vendored" ] }
 raft = "0.4.3"
 hex = "0.3"
 vlog = "0.1.4"
-kvproto = { git = "https://github.com/pingcap/kvproto.git", branch = "release-3.1" }
+kvproto = { git = "https://github.com/solotzg/kvproto.git", branch = "release-3.1" }
 tikv_util = { path = "../components/tikv_util" }
 engine = { path = "../components/engine" }
 tikv_alloc = { path = "../components/tikv_alloc" }
