@@ -1735,7 +1735,7 @@ dependencies = [
 [[package]]
 name = "kvproto"
 version = "0.0.1"
-source = "git+https://github.com/solotzg/kvproto.git?branch=release-3.1#eb621188c75c5bafcaf61c4e6b3775cf167a88e9"
+source = "git+https://github.com/solotzg/kvproto.git?branch=release-3.1#bd600ab29421b0dea48bb1f16fd2189db386d144"
 dependencies = [
  "bytes 0.4.12",
  "futures 0.1.29",
@@ -2715,7 +2715,7 @@ version = "2.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb1a649b870f7fe03c965bf2fa6728361f6abbb6f3b72079515af8cb56d769cf"
 dependencies = [
- "log 0.3.9 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log 0.4.8",
 ]
 
 [[package]]
@@ -2804,7 +2804,7 @@ version = "0.4.3"
 source = "git+https://github.com/tikv/raft-rs?rev=9782199fa6318f94bf0974129664d974b03f8f11#9782199fa6318f94bf0974129664d974b03f8f11"
 dependencies = [
  "fxhash",
- "log 0.3.9 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log 0.4.8",
  "protobuf",
  "quick-error 1.2.2",
  "rand 0.5.5",
@@ -4287,7 +4287,7 @@ dependencies = [
 [[package]]
 name = "tipb"
 version = "0.0.1"
-source = "git+https://github.com/pingcap/tipb.git?branch=release-3.1#cc8b75c5338321c30389273dd32874e525f8c7ee"
+source = "git+https://github.com/pingcap/tipb.git?branch=release-3.1#ce17d2d0325132a7c9839e96645d01e6584c142a"
 dependencies = [
  "protobuf",
 ]
