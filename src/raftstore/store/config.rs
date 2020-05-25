@@ -188,9 +188,10 @@ impl Default for Config {
             cleanup_import_sst_interval: ReadableDuration::minutes(10),
             local_read_batch_size: 1024,
             apply_max_batch_size: 1024,
-            apply_pool_size: 2,
+            // Hacked by JaySon-Huang, make apply_pool_size, store_pool_size 4 by default.
+            apply_pool_size: 4,
             store_max_batch_size: 1024,
-            store_pool_size: 2,
+            store_pool_size: 4,
             future_poll_size: 1,
             hibernate_regions: false,
 
