@@ -1018,8 +1018,8 @@ impl ApplyDelegate {
                     "region not found in tiflash, maybe have exec `RemoveNode` first";
                     "region_id" => self.region_id(),
                     "peer_id" => self.id(),
-                    "term" => ctx.exec_ctx.as_ref().unwrap().term,
-                    "index" => ctx.exec_ctx.as_ref().unwrap().index,
+                    "term" => term,
+                    "index" => index,
                 );
                 true
             }
