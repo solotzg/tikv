@@ -462,6 +462,7 @@ pub struct RaftPoller<T: 'static, C: 'static> {
     poll_ctx: PollContext<T, C>,
     pending_proposals: Vec<RegionProposal>,
     messages_per_tick: usize,
+    last_sync_time: tikv_util::time::Instant,
 }
 
 impl<T: Transport, C: PdClient> RaftPoller<T, C> {
@@ -519,6 +520,7 @@ impl<T: Transport, C: PdClient> RaftPoller<T, C> {
             } else {
                 self.poll_ctx.raft_wb.clear();
             }
+            self.last_sync_time = tikv_util::time::Instant::now_coarse();
         }
         fail_point!("raft_after_save");
         if ready_cnt != 0 {
@@ -669,6 +671,14 @@ impl<T: Transport, C: PdClient> PollHandler<PeerFsm, StoreFsm> for RaftPoller<T,
             self.poll_ctx.trans.flush();
             self.poll_ctx.need_flush_trans = false;
         }
+    }
+
+    fn batch_retry_recv_timeout(&self) -> Duration {
+        self.poll_ctx.cfg.store_batch_retry_recv_timeout.0
+    }
+
+    fn should_retry_recv(&self) -> bool {
+        self.last_sync_time.elapsed() < self.poll_ctx.cfg.store_batch_retry_recv_timeout.0
     }
 }
 
@@ -912,6 +922,7 @@ where
             messages_per_tick: ctx.cfg.messages_per_tick,
             poll_ctx: ctx,
             pending_proposals: Vec::new(),
+            last_sync_time: tikv_util::time::Instant::now_coarse(),
         }
     }
 }

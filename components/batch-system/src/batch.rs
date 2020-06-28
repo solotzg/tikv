@@ -8,10 +8,11 @@
 use crate::fsm::{Fsm, FsmScheduler};
 use crate::mailbox::BasicMailbox;
 use crate::router::Router;
-use crossbeam::channel::{self, SendError, TryRecvError};
+use crossbeam::channel::{self, RecvTimeoutError, SendError, TryRecvError};
 use std::borrow::Cow;
 use std::thread::{self, JoinHandle};
 use tikv_util::mpsc;
+use tikv_util::time::Duration;
 
 /// A unify type for FSMs so that they can be sent to channel easily.
 enum FsmTypes<N, C> {
@@ -250,6 +251,14 @@ pub trait PollHandler<N, C> {
 
     /// This function is called when batch system is going to sleep.
     fn pause(&mut self) {}
+
+    fn batch_retry_recv_timeout(&self) -> Duration {
+        Duration::default()
+    }
+
+    fn should_retry_recv(&self) -> bool {
+        unimplemented!()
+    }
 }
 
 /// Internal poller that fetches batch and call handler hooks for readiness.
@@ -287,16 +296,41 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
             true
         };
 
-        while pushed {
-            if batch.len() < max_size {
-                let fsm = match self.fsm_receiver.try_recv() {
-                    Ok(fsm) => fsm,
-                    Err(TryRecvError::Empty) => return,
-                    Err(TryRecvError::Disconnected) => unreachable!(),
-                };
-                pushed = batch.push(fsm);
-            } else {
-                return;
+        let timeout = self.handler.batch_retry_recv_timeout();
+        if timeout == Duration::default() {
+            while pushed {
+                if batch.len() < max_size {
+                    let fsm = match self.fsm_receiver.try_recv() {
+                        Ok(fsm) => fsm,
+                        Err(TryRecvError::Empty) => return,
+                        Err(TryRecvError::Disconnected) => unreachable!(),
+                    };
+                    pushed = batch.push(fsm);
+                } else {
+                    return;
+                }
+            }
+        } else {
+            while pushed {
+                if batch.len() < max_size {
+                    let fsm = match self.fsm_receiver.try_recv() {
+                        Ok(fsm) => fsm,
+                        Err(TryRecvError::Empty) => {
+                            if !self.handler.should_retry_recv() {
+                                return;
+                            }
+                            match self.fsm_receiver.recv_timeout(timeout) {
+                                Ok(fsm) => fsm,
+                                Err(RecvTimeoutError::Timeout) => return,
+                                Err(RecvTimeoutError::Disconnected) => unreachable!(),
+                            }
+                        }
+                        Err(TryRecvError::Disconnected) => unreachable!(),
+                    };
+                    pushed = batch.push(fsm);
+                } else {
+                    return;
+                }
             }
         }
         batch.clear();

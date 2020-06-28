@@ -118,6 +118,8 @@ pub struct Config {
 
     pub store_max_batch_size: usize,
     pub store_pool_size: usize,
+    pub store_batch_retry_recv_timeout: ReadableDuration,
+
     pub future_poll_size: usize,
     pub hibernate_regions: bool,
 
@@ -191,6 +193,7 @@ impl Default for Config {
             apply_pool_size: 2,
             store_max_batch_size: 1024,
             store_pool_size: 2,
+            store_batch_retry_recv_timeout: ReadableDuration::millis(4),
             future_poll_size: 1,
             hibernate_regions: false,
 
