@@ -24,7 +24,7 @@ use crate::store::peer_storage::{
 use crate::store::snap::{plain_file_used, Error, Result, SNAPSHOT_CFS};
 use crate::store::transport::CasualRouter;
 use crate::store::{
-    self, check_abort, ApplyOptions, CasualMessage, SnapEntry, SnapKey, SnapManager,
+    self, check_abort, CasualMessage, GenericSnapshot, SnapEntry, SnapKey, SnapManager,
 };
 use yatp::pool::{Builder, ThreadPool};
 use yatp::task::future::TaskCell;
@@ -57,6 +57,7 @@ pub enum Task {
     },
     Apply {
         region_id: u64,
+        peer_id: u64,
         status: Arc<AtomicUsize>,
     },
     /// Destroy data between [start_key, end_key).
@@ -286,7 +287,7 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
     }
 
     /// Applies snapshot data of the Region.
-    fn apply_snap(&mut self, region_id: u64, abort: Arc<AtomicUsize>) -> Result<()> {
+    fn apply_snap(&mut self, region_id: u64, peer_id: u64, abort: Arc<AtomicUsize>) -> Result<()> {
         info!("begin apply snap data"; "region_id" => region_id);
         fail_point!("region_apply_snap", |_| { Ok(()) });
         check_abort(&abort)?;
@@ -334,20 +335,13 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
         defer!({
             self.mgr.deregister(&snap_key, &SnapEntry::Applying);
         });
-        let mut s = box_try!(self.mgr.get_snapshot_for_applying_to_engine(&snap_key));
+        let s = box_try!(self.mgr.get_concrete_snapshot_for_applying(&snap_key));
         if !s.exists() {
             return Err(box_err!("missing snapshot file {}", s.path()));
         }
         check_abort(&abort)?;
         let timer = Instant::now();
-        let options = ApplyOptions {
-            db: self.engines.kv.c().clone(),
-            region,
-            abort: Arc::clone(&abort),
-            write_batch_size: self.batch_size,
-            coprocessor_host: self.coprocessor_host.clone(),
-        };
-        s.apply(options)?;
+        s.apply_to_tiflash(&region, peer_id, idx, term);
 
         let mut wb = self.engines.kv.c().write_batch();
         region_state.set_state(PeerState::Normal);
@@ -365,13 +359,13 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
     }
 
     /// Tries to apply the snapshot of the specified Region. It calls `apply_snap` to do the actual work.
-    fn handle_apply(&mut self, region_id: u64, status: Arc<AtomicUsize>) {
+    fn handle_apply(&mut self, region_id: u64, peer_id: u64, status: Arc<AtomicUsize>) {
         status.compare_and_swap(JOB_STATUS_PENDING, JOB_STATUS_RUNNING, Ordering::SeqCst);
         SNAP_COUNTER_VEC.with_label_values(&["apply", "all"]).inc();
         let apply_histogram = SNAP_HISTOGRAM.with_label_values(&["apply"]);
         let timer = apply_histogram.start_coarse_timer();
 
-        match self.apply_snap(region_id, Arc::clone(&status)) {
+        match self.apply_snap(region_id, peer_id, Arc::clone(&status)) {
             Ok(()) => {
                 status.swap(JOB_STATUS_FINISHED, Ordering::SeqCst);
                 SNAP_COUNTER_VEC
@@ -591,8 +585,13 @@ impl<R: CasualRouter<RocksEngine>> Runner<R> {
             if self.ctx.ingest_maybe_stall() {
                 break;
             }
-            if let Some(Task::Apply { region_id, status }) = self.pending_applies.pop_front() {
-                self.ctx.handle_apply(region_id, status);
+            if let Some(Task::Apply {
+                region_id,
+                peer_id,
+                status,
+            }) = self.pending_applies.pop_front()
+            {
+                self.ctx.handle_apply(region_id, peer_id, status);
             }
         }
     }

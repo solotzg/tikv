@@ -404,7 +404,7 @@ where
 
     pub fn stop(mut self) {
         // unregister the status address to pd
-        self.unregister_addr();
+        // self.unregister_addr();
         let _ = self.tx.send(());
         self.thread_pool.shutdown_timeout(Duration::from_secs(10));
     }
@@ -765,7 +765,7 @@ where
             self.start_serve(server);
         }
         // register the advertise status address to pd
-        self.register_addr(advertise_status_addr);
+        // self.register_addr(advertise_status_addr);
         Ok(())
     }
 }

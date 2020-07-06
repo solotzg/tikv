@@ -1,10 +1,9 @@
 [package]
-name = "cmd"
+name = "tiflash-proxy"
 version = "0.0.1"
 license = "Apache-2.0"
 edition = "2018"
 publish = false
-default-run = "tikv-server"
 
 [features]
 tcmalloc = ["tikv/tcmalloc"]
@@ -15,7 +14,6 @@ sse = ["tikv/sse"]
 mem-profiling = ["tikv/mem-profiling"]
 failpoints = ["tikv/failpoints"]
 protobuf-codec = [
-  "backup/protobuf-codec",
   "engine/protobuf-codec",
   "grpcio/protobuf-codec",
   "keys/protobuf-codec",
@@ -25,10 +23,8 @@ protobuf-codec = [
   "raftstore/protobuf-codec",
   "tikv/protobuf-codec",
   "txn_types/protobuf-codec",
-  "cdc/protobuf-codec",
 ]
 prost-codec = [
-  "backup/prost-codec",
   "engine/prost-codec",
   "grpcio/prost-codec",
   "keys/prost-codec",
@@ -38,21 +34,13 @@ prost-codec = [
   "raftstore/prost-codec",
   "tikv/prost-codec",
   "txn_types/prost-codec",
-  "cdc/prost-codec",
 ]
 
 [lib]
-name = "cmd"
-
-[[bin]]
-name = "tikv-server"
-
-[[bin]]
-name = "tikv-ctl"
+name = "tiflash_proxy"
+crate-type =["cdylib"]
 
 [dependencies]
-backup = { path = "../components/backup", default-features = false }
-cdc = { path = "../components/cdc" }
 chrono = "0.4"
 clap = "2.32"
 encryption = { path = "../components/encryption" }

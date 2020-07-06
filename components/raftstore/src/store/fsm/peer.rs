@@ -56,6 +56,7 @@ use crate::store::PdTask;
 use crate::store::{
     util, CasualMessage, Config, PeerMsg, PeerTicks, RaftCommand, SignificantMsg, SnapKey, StoreMsg,
 };
+use crate::tiflash_ffi::get_tiflash_server_helper;
 use crate::{Error, Result};
 use keys::{self, enc_end_key, enc_start_key};
 
@@ -1536,6 +1537,11 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
 
         // Mark itself as pending_remove
         self.fsm.peer.pending_remove = true;
+
+        {
+            // hacked by solotzg
+            get_tiflash_server_helper().handle_destroy(region_id);
+        }
 
         // Clear merge related structures.
         let mut meta = self.ctx.store_meta.lock().unwrap();

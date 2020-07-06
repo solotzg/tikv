@@ -5,7 +5,7 @@ use std::f64::INFINITY;
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, Metadata};
 use std::fs::{File, OpenOptions};
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -30,7 +30,7 @@ use raft::eraftpb::Snapshot as RaftSnapshot;
 
 use crate::errors::Error as RaftStoreError;
 use crate::store::{RaftRouter, StoreMsg};
-use crate::Result as RaftStoreResult;
+use crate::{tiflash_ffi, Result as RaftStoreResult};
 use keys::{enc_end_key, enc_start_key};
 use tikv_util::collections::{HashMap, HashMapEntry as Entry};
 use tikv_util::file::{
@@ -45,7 +45,10 @@ use crate::store::metrics::{
     SNAPSHOT_CF_SIZE,
 };
 use crate::store::peer_storage::JOB_STATUS_CANCELLING;
+use crate::store::snap::snap_io::get_decrypter_reader;
+use crate::store::util::check_key_in_region;
 use openssl::symm::{Cipher, Crypter, Mode};
+use tikv_util::codec::bytes::CompactBytesFromFileDecoder;
 
 #[path = "snap/io.rs"]
 pub mod snap_io;
@@ -339,6 +342,90 @@ pub struct Snap {
     hold_tmp_files: bool,
 
     mgr: SnapManagerCore,
+}
+
+impl Snap {
+    fn read_lock_cf_file(
+        path: &str,
+        key_mgr: Option<&Arc<DataKeyManager>>,
+    ) -> tiflash_ffi::SnapshotKV {
+        let mut lock_cf_snap = tiflash_ffi::SnapshotKV::new();
+        let file = File::open(path).unwrap();
+        let mut decoder = if let Some(key_mgr) = key_mgr {
+            let reader = get_decrypter_reader(path, key_mgr).unwrap();
+            BufReader::new(reader)
+        } else {
+            BufReader::new(Box::new(file) as Box<dyn Read + Send>)
+        };
+
+        loop {
+            let key = decoder.decode_compact_bytes().unwrap();
+            if key.is_empty() {
+                break;
+            }
+            let ori_key = keys::origin_key(&key);
+            let ori_val = decoder.decode_compact_bytes().unwrap();
+            lock_cf_snap.push_back((ori_key.to_vec(), ori_val));
+        }
+
+        lock_cf_snap
+    }
+
+    pub fn apply_to_tiflash(
+        &self,
+        region: &kvproto::metapb::Region,
+        peer_id: u64,
+        idx: u64,
+        term: u64,
+    ) {
+        let mut snapshot_helper = tiflash_ffi::SnapshotHelper::default();
+
+        for cf_file in &self.cf_files {
+            if cf_file.size == 0 {
+                // Skip empty cf file.
+                continue;
+            }
+
+            let (cf_type, snap_kv) = if plain_file_used(cf_file.cf) {
+                (
+                    tiflash_ffi::WriteCmdCf::Lock,
+                    Snap::read_lock_cf_file(
+                        cf_file.path.to_str().unwrap(),
+                        self.mgr.encryption_key_manager.as_ref(),
+                    ),
+                )
+            } else {
+                let cf_type = if cf_file.cf == CF_DEFAULT {
+                    tiflash_ffi::WriteCmdCf::Default
+                } else if cf_file.cf == CF_WRITE {
+                    tiflash_ffi::WriteCmdCf::Write
+                } else {
+                    unreachable!()
+                };
+                (
+                    cf_type,
+                    tiflash_ffi::gen_snap_kv_data_from_sst(
+                        cf_file.path.to_str().unwrap(),
+                        self.mgr.encryption_key_manager.clone(),
+                    ),
+                )
+            };
+
+            for kv in &snap_kv {
+                check_key_in_region(kv.0.as_ref(), &region).unwrap();
+            }
+
+            snapshot_helper.add_cf_snap(cf_type, snap_kv);
+        }
+
+        tiflash_ffi::get_tiflash_server_helper().handle_apply_snapshot(
+            &region,
+            peer_id,
+            snapshot_helper.gen_snapshot_view(),
+            idx,
+            term,
+        );
+    }
 }
 
 impl Snap {
@@ -1285,7 +1372,7 @@ impl SnapManager {
         Ok(Box::new(f))
     }
 
-    fn get_concrete_snapshot_for_applying(&self, key: &SnapKey) -> RaftStoreResult<Box<Snap>> {
+    pub fn get_concrete_snapshot_for_applying(&self, key: &SnapKey) -> RaftStoreResult<Box<Snap>> {
         let _lock = self.core.registry.rl();
         let base = &self.core.base;
         let s = Snap::new_for_applying(base, key, &self.core)?;
