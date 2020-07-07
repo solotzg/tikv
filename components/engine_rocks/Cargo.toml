@@ -28,10 +28,10 @@ serde_derive = "1.0"
 coarsetime = "0.1"
 
 [dependencies.rocksdb]
-git = "https://github.com/tikv/rust-rocksdb.git"
+git = "https://github.com/Little-Wallace/rust-rocksdb.git"
+branch = "write_batch"
 package = "rocksdb"
-features = ["encryption"]
-branch = "tikv-4.x"
+features = ["encryption", "static_libcpp"]
 
 [dev-dependencies]
 kvproto = { git = "https://github.com/pingcap/kvproto.git", branch = "release-4.0", default-features = false }

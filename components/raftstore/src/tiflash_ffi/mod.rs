@@ -53,9 +53,11 @@ pub fn gen_snap_kv_data_from_sst(
     cf_snap
 }
 
+#[derive(Eq, PartialEq)]
 pub enum WriteCmdType {
     Put,
     Del,
+    None,
 }
 
 #[derive(Copy, Clone)]
@@ -93,6 +95,7 @@ impl Into<u8> for WriteCmdType {
         return match self {
             WriteCmdType::Put => 0,
             WriteCmdType::Del => 1,
+            _ => 2,
         };
     }
 }

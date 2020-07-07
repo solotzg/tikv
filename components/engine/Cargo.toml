@@ -40,9 +40,10 @@ tikv_util = { path = "../tikv_util" }
 time = "0.1"
 
 [dependencies.rocksdb]
-git = "https://github.com/tikv/rust-rocksdb.git"
+git = "https://github.com/Little-Wallace/rust-rocksdb.git"
+branch = "write_batch"
 package = "rocksdb"
-branch = "tikv-4.x"
+features = ["static_libcpp"]
 
 [dev-dependencies]
 tempfile = "3.0"

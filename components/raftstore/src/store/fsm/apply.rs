@@ -61,6 +61,7 @@ use tikv_util::MustConsumeVec;
 use super::metrics::*;
 
 use super::super::RegionTask;
+use crate::store::write_batch_helper::RocksWriteBatchReader;
 use crate::tiflash_ffi::{
     gen_snap_kv_data_from_sst, get_tiflash_server_helper, RaftCmdHeader, SnapshotHelper,
     TiFlashApplyRes, WriteCmdCf, WriteCmdType, WriteCmds,
@@ -714,6 +715,18 @@ pub struct ApplyDelegate {
     metrics: ApplyMetrics,
 }
 
+fn fetch_write_cmds_from_raw_data(data: &[u8]) -> WriteCmds {
+    let mut cmds = WriteCmds::with_capacity(RocksWriteBatchReader::count(data));
+    for (tp, cf, key, value) in RocksWriteBatchReader::iter(data) {
+        let key = keys::origin_key(key);
+        if tp == WriteCmdType::None {
+            continue;
+        }
+        cmds.push(key, value, tp, cf);
+    }
+    cmds
+}
+
 impl ApplyDelegate {
     fn from_registration(reg: Registration) -> ApplyDelegate {
         ApplyDelegate {
@@ -851,18 +864,22 @@ impl ApplyDelegate {
         let data = entry.get_data();
 
         if !data.is_empty() {
-            let cmd = util::parse_data_at(data, index, &self.tag);
-
-            if should_flush_to_engine(&cmd) {
-                apply_ctx.commit_opt(self, true);
-                if let Some(start) = self.handle_start.as_ref() {
-                    if start.elapsed() >= apply_ctx.yield_duration {
-                        return ApplyResult::Yield;
+            return match util::decode_entry_data(data, index, &self.tag) {
+                util::EntryCommand::PBRaftCmdRequest(cmd) => {
+                    if should_flush_to_engine(&cmd) {
+                        apply_ctx.commit_opt(self, true);
+                        if let Some(start) = self.handle_start.as_ref() {
+                            if start.elapsed() >= apply_ctx.yield_duration {
+                                return ApplyResult::Yield;
+                            }
+                        }
                     }
+                    self.process_raft_cmd(apply_ctx, index, term, cmd)
                 }
-            }
-
-            return self.process_raft_cmd(apply_ctx, index, term, cmd);
+                util::EntryCommand::RawEntryCmdRequest { epoch, data } => {
+                    self.process_raw_cmd(apply_ctx, index, term, &epoch, data)
+                }
+            };
         }
         // TOOD(cdc): should we observe empty cmd, aka leader change?
 
@@ -890,6 +907,41 @@ impl ApplyDelegate {
                 .unwrap()
                 .push(cmd.cb.take(), cmd_resp::err_resp(Error::StaleCommand, term));
         }
+        ApplyResult::None
+    }
+
+    fn process_raw_cmd<W: WriteBatch + WriteBatchVecExt<RocksEngine>>(
+        &mut self,
+        apply_ctx: &mut ApplyContext<W>,
+        index: u64,
+        term: u64,
+        epoch: &kvproto::metapb::RegionEpoch,
+        data: &[u8],
+    ) -> ApplyResult {
+        let include_region = epoch.get_version() >= self.last_merge_version;
+        let (mut resp, cmds) = match util::compare_region_epoch(
+            epoch,
+            &self.region,
+            false, /* check_conf_ver */
+            true,  /* check_ver */
+            include_region,
+        ) {
+            Ok(()) => (
+                RaftCmdResponse::default(),
+                fetch_write_cmds_from_raw_data(data),
+            ),
+            Err(e) => (cmd_resp::new_error(e), WriteCmds::new()),
+        };
+
+        get_tiflash_server_helper()
+            .handle_write_raft_cmd(&cmds, RaftCmdHeader::new(self.region.get_id(), index, term));
+
+        self.apply_state.set_applied_index(index);
+        self.applied_index_term = term;
+
+        cmd_resp::bind_term(&mut resp, self.term);
+        let cmd_cb = self.find_cb(index, term, false);
+        apply_ctx.cbs.last_mut().unwrap().push(cmd_cb, resp);
         ApplyResult::None
     }
 
@@ -1311,7 +1363,7 @@ impl ApplyDelegate {
                     continue;
                 }
                 CmdType::Prewrite | CmdType::Invalid | CmdType::ReadIndex => {
-                    panic!("invalid cmd type, message maybe currupted");
+                    panic!("invalid cmd type, message maybe corrupted");
                 }
             }
         }

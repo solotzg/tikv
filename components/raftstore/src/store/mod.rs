@@ -51,3 +51,5 @@ pub use self::worker::{
 };
 pub use self::worker::{KeyEntry, LocalReader, RegionTask};
 pub use self::worker::{SplitCheckRunner, SplitCheckTask};
+
+mod write_batch_helper;
