@@ -406,7 +406,7 @@ where
         // unregister the status address to pd
         // self.unregister_addr();
         let _ = self.tx.send(());
-        self.thread_pool.shutdown_timeout(Duration::from_secs(10));
+        self.thread_pool.shutdown_timeout(Default::default());
     }
 
     // Return listening address, this may only be used for outer test
