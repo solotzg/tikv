@@ -124,7 +124,6 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     let server_config = tikv.init_servers(&gc_worker);
     tikv.register_services();
     tikv.init_metrics_flusher();
-
     tikv.run_server(server_config);
     tikv.run_status_server();
 
