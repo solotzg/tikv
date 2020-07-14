@@ -100,8 +100,6 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     tikv.init_yatp();
     tikv.init_encryption();
 
-    info!("encryption module is initialized");
-
     let mut proxy = TiFlashRaftProxy {
         stopped: 0,
         key_manager: tikv.encryption_key_manager.clone(),
