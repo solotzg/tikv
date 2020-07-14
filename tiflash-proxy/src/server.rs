@@ -40,6 +40,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    thread,
     thread::JoinHandle,
     time::Duration,
 };
@@ -69,7 +70,9 @@ use tikv_util::{
     worker::{FutureWorker, Worker},
 };
 
-use raftstore::tiflash_ffi;
+use raftstore::tiflash_ffi::{
+    get_tiflash_server_helper_mut, TiFlashRaftProxy, TiFlashRaftProxyHelper,
+};
 
 /// Run a TiKV server. Returns when the server is shutdown by the user, in which
 /// case the server will be properly stopped.
@@ -96,20 +99,50 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     tikv.init_fs();
     tikv.init_yatp();
     tikv.init_encryption();
+
+    info!("encryption module is initialized");
+
+    let mut proxy = TiFlashRaftProxy {
+        stopped: 0,
+        key_manager: tikv.encryption_key_manager.clone(),
+    };
+
+    let proxy_helper = TiFlashRaftProxyHelper::new(&proxy);
+
+    info!("set tiflash proxy helper");
+
+    get_tiflash_server_helper_mut().handle_set_proxy(&proxy_helper);
+
+    info!("wait for tiflash server to start");
+    while !get_tiflash_server_helper_mut().handle_check_tiflash_alive() {
+        thread::sleep(Duration::from_millis(200));
+    }
+    info!("tiflash server is started");
+
     tikv.init_engines();
     let gc_worker = tikv.init_gc_worker();
     let server_config = tikv.init_servers(&gc_worker);
     tikv.register_services();
     tikv.init_metrics_flusher();
+
     tikv.run_server(server_config);
     tikv.run_status_server();
 
-    let proxy = tiflash_ffi::TiFlashRaftProxy { check_sum: 666 };
-    tiflash_ffi::get_tiflash_server_helper_mut().atomic_update_proxy(&proxy);
-
     signal_handler::wait_for_signal(Some(tikv.engines.take().unwrap().engines));
 
+    info!("got terminal signal from tiflash and stop all services");
+
     tikv.stop();
+
+    proxy.stopped = 1;
+
+    info!("all services in tiflash proxy are stopped");
+
+    info!("wait for tiflash server to stop");
+    while get_tiflash_server_helper_mut().handle_check_tiflash_alive() {
+        thread::sleep(Duration::from_millis(200));
+    }
+    info!("tiflash server is stopped");
 }
 
 const RESERVED_OPEN_FDS: u64 = 1000;

@@ -1,7 +1,10 @@
 use encryption::DataKeyManager;
 use engine_rocks::encryption::get_env;
 use engine_rocks::RocksSstReader;
-use engine_traits::{Iterator, SeekKey, SstReader, CF_DEFAULT, CF_LOCK, CF_WRITE};
+use engine_traits::{
+    EncryptionKeyManager, EncryptionMethod, FileEncryptionInfo, Iterator, SeekKey, SstReader,
+    CF_DEFAULT, CF_LOCK, CF_WRITE,
+};
 use kvproto::{metapb, raft_cmdpb};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -28,9 +31,232 @@ impl From<u32> for TiFlashApplyRes {
     }
 }
 
-#[repr(C)]
 pub struct TiFlashRaftProxy {
-    pub check_sum: u64,
+    pub stopped: u8,
+    pub key_manager: Option<Arc<DataKeyManager>>,
+}
+
+type TiFlashRaftProxyPtr = *const TiFlashRaftProxy;
+
+#[no_mangle]
+pub extern "C" fn ffi_handle_check_stopped(proxy_ptr: TiFlashRaftProxyPtr) -> u8 {
+    unsafe { (*proxy_ptr).stopped }
+}
+
+#[no_mangle]
+pub extern "C" fn ffi_handle_enable_encryption(proxy_ptr: TiFlashRaftProxyPtr) -> u8 {
+    unsafe { (*proxy_ptr).key_manager.is_some().into() }
+}
+
+enum FileEncryptionRes {
+    Disabled,
+    Ok,
+    Error,
+}
+
+impl Into<u8> for FileEncryptionRes {
+    fn into(self) -> u8 {
+        return match self {
+            FileEncryptionRes::Disabled => 0,
+            FileEncryptionRes::Ok => 1,
+            FileEncryptionRes::Error => 2,
+        };
+    }
+}
+
+type TiFlashRawString = *const u8;
+
+#[repr(C)]
+pub struct FileEncryptionInfoRes {
+    pub res: u8,
+    pub method: u8,
+    pub key: TiFlashRawString,
+    pub iv: TiFlashRawString,
+    pub erro_msg: TiFlashRawString,
+}
+
+impl FileEncryptionInfoRes {
+    fn new(res: FileEncryptionRes) -> Self {
+        FileEncryptionInfoRes {
+            res: res.into(),
+            method: EncryptionMethod::Unknown as u8,
+            key: std::ptr::null(),
+            iv: std::ptr::null(),
+            erro_msg: std::ptr::null(),
+        }
+    }
+
+    fn error(erro_msg: TiFlashRawString) -> Self {
+        FileEncryptionInfoRes {
+            res: FileEncryptionRes::Error.into(),
+            method: EncryptionMethod::Unknown as u8,
+            key: std::ptr::null(),
+            iv: std::ptr::null(),
+            erro_msg,
+        }
+    }
+
+    fn from(f: FileEncryptionInfo) -> Self {
+        FileEncryptionInfoRes {
+            res: FileEncryptionRes::Ok.into(),
+            method: f.method as u8,
+            key: get_tiflash_server_helper().gen_cpp_string(&f.key),
+            iv: get_tiflash_server_helper().gen_cpp_string(&f.iv),
+            erro_msg: std::ptr::null(),
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ffi_handle_get_file(
+    proxy_ptr: TiFlashRaftProxyPtr,
+    name: BaseBuffView,
+) -> FileEncryptionInfoRes {
+    unsafe {
+        (*proxy_ptr).key_manager.as_ref().map_or(
+            FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
+            |key_manager| {
+                let p = key_manager.get_file(std::str::from_utf8_unchecked(name.to_slice()));
+                p.map_or_else(
+                    |e| {
+                        FileEncryptionInfoRes::error(get_tiflash_server_helper().gen_cpp_string(
+                            format!("Encryption key manager get file failure: {}", e).as_ref(),
+                        ))
+                    },
+                    |f| FileEncryptionInfoRes::from(f),
+                )
+            },
+        )
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ffi_handle_new_file(
+    proxy_ptr: TiFlashRaftProxyPtr,
+    name: BaseBuffView,
+) -> FileEncryptionInfoRes {
+    unsafe {
+        (*proxy_ptr).key_manager.as_ref().map_or(
+            FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
+            |key_manager| {
+                let p = key_manager.new_file(std::str::from_utf8_unchecked(name.to_slice()));
+                p.map_or_else(
+                    |e| {
+                        FileEncryptionInfoRes::error(get_tiflash_server_helper().gen_cpp_string(
+                            format!("Encryption key manager new file failure: {}", e).as_ref(),
+                        ))
+                    },
+                    |f| FileEncryptionInfoRes::from(f),
+                )
+            },
+        )
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ffi_handle_delete_file(
+    proxy_ptr: TiFlashRaftProxyPtr,
+    name: BaseBuffView,
+) -> FileEncryptionInfoRes {
+    unsafe {
+        (*proxy_ptr).key_manager.as_ref().map_or(
+            FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
+            |key_manager| {
+                let p = key_manager.delete_file(std::str::from_utf8_unchecked(name.to_slice()));
+                p.map_or_else(
+                    |e| {
+                        FileEncryptionInfoRes::error(get_tiflash_server_helper().gen_cpp_string(
+                            format!("Encryption key manager delete file failure: {}", e).as_ref(),
+                        ))
+                    },
+                    |_| FileEncryptionInfoRes::new(FileEncryptionRes::Ok),
+                )
+            },
+        )
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ffi_handle_link_file(
+    proxy_ptr: TiFlashRaftProxyPtr,
+    src: BaseBuffView,
+    dst: BaseBuffView,
+) -> FileEncryptionInfoRes {
+    unsafe {
+        (*proxy_ptr).key_manager.as_ref().map_or(
+            FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
+            |key_manager| {
+                let p = key_manager.link_file(
+                    std::str::from_utf8_unchecked(src.to_slice()),
+                    std::str::from_utf8_unchecked(dst.to_slice()),
+                );
+                p.map_or_else(
+                    |e| {
+                        FileEncryptionInfoRes::error(get_tiflash_server_helper().gen_cpp_string(
+                            format!("Encryption key manager link file failure: {}", e).as_ref(),
+                        ))
+                    },
+                    |_| FileEncryptionInfoRes::new(FileEncryptionRes::Ok),
+                )
+            },
+        )
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ffi_handle_rename_file(
+    proxy_ptr: TiFlashRaftProxyPtr,
+    src: BaseBuffView,
+    dst: BaseBuffView,
+) -> FileEncryptionInfoRes {
+    unsafe {
+        (*proxy_ptr).key_manager.as_ref().map_or(
+            FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
+            |key_manager| {
+                let p = key_manager.rename_file(
+                    std::str::from_utf8_unchecked(src.to_slice()),
+                    std::str::from_utf8_unchecked(dst.to_slice()),
+                );
+                p.map_or_else(
+                    |e| {
+                        FileEncryptionInfoRes::error(get_tiflash_server_helper().gen_cpp_string(
+                            format!("Encryption key manager rename file failure: {}", e).as_ref(),
+                        ))
+                    },
+                    |_| FileEncryptionInfoRes::new(FileEncryptionRes::Ok),
+                )
+            },
+        )
+    }
+}
+
+#[repr(C)]
+pub struct TiFlashRaftProxyHelper {
+    proxy_ptr: TiFlashRaftProxyPtr,
+    handle_check_stopped: extern "C" fn(TiFlashRaftProxyPtr) -> u8,
+    handle_enable_encryption: extern "C" fn(TiFlashRaftProxyPtr) -> u8,
+    handle_get_file: extern "C" fn(TiFlashRaftProxyPtr, BaseBuffView) -> FileEncryptionInfoRes,
+    handle_new_file: extern "C" fn(TiFlashRaftProxyPtr, BaseBuffView) -> FileEncryptionInfoRes,
+    handle_delete_file: extern "C" fn(TiFlashRaftProxyPtr, BaseBuffView) -> FileEncryptionInfoRes,
+    handle_link_file:
+        extern "C" fn(TiFlashRaftProxyPtr, BaseBuffView, BaseBuffView) -> FileEncryptionInfoRes,
+    handle_rename_file:
+        extern "C" fn(TiFlashRaftProxyPtr, BaseBuffView, BaseBuffView) -> FileEncryptionInfoRes,
+}
+
+impl TiFlashRaftProxyHelper {
+    pub fn new(proxy: &TiFlashRaftProxy) -> Self {
+        TiFlashRaftProxyHelper {
+            proxy_ptr: proxy,
+            handle_check_stopped: ffi_handle_check_stopped,
+            handle_enable_encryption: ffi_handle_enable_encryption,
+            handle_get_file: ffi_handle_get_file,
+            handle_new_file: ffi_handle_new_file,
+            handle_delete_file: ffi_handle_delete_file,
+            handle_link_file: ffi_handle_link_file,
+            handle_rename_file: ffi_handle_rename_file,
+        }
+    }
 }
 
 pub fn gen_snap_kv_data_from_sst(
@@ -227,22 +453,15 @@ impl SnapshotHelper {
 }
 
 #[repr(C)]
-pub struct BaseBuff {
-    inner: *const (),
-    data: *const u8,
-    len: u64,
-}
-
-impl Drop for BaseBuff {
-    fn drop(&mut self) {
-        (get_tiflash_server_helper().gc_buff)(self as *mut _ as *const _);
-    }
-}
-
-#[repr(C)]
 pub struct BaseBuffView {
     data: *const u8,
     len: u64,
+}
+
+impl BaseBuffView {
+    pub(crate) fn to_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.data, self.len as usize) }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -294,17 +513,18 @@ pub struct TiFlashServerHelper {
     version: u32,
     //
     inner: TiFlashServerPtr,
-    gc_buff: extern "C" fn(*const BaseBuff),
+    gen_cpp_string: extern "C" fn(BaseBuffView) -> *const u8,
     handle_write_raft_cmd: extern "C" fn(TiFlashServerPtr, WriteCmdsView, RaftCmdHeader) -> u32,
     handle_admin_raft_cmd:
         extern "C" fn(TiFlashServerPtr, BaseBuffView, BaseBuffView, RaftCmdHeader) -> u32,
     handle_apply_snapshot:
         extern "C" fn(TiFlashServerPtr, BaseBuffView, u64, SnapshotViewArray, u64, u64),
-    atomic_update_proxy: extern "C" fn(TiFlashServerPtr, *const TiFlashRaftProxy),
+    handle_set_proxy: extern "C" fn(TiFlashServerPtr, *const TiFlashRaftProxyHelper),
     handle_destroy: extern "C" fn(TiFlashServerPtr, RegionId),
     handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader),
     handle_check_terminated: extern "C" fn(TiFlashServerPtr) -> u8,
     handle_compute_fs_stats: extern "C" fn(TiFlashServerPtr) -> FsStats,
+    handle_check_tiflash_alive: extern "C" fn(TiFlashServerPtr) -> u8,
 }
 
 unsafe impl Send for TiFlashServerHelper {}
@@ -333,14 +553,18 @@ impl TiFlashServerHelper {
         TiFlashApplyRes::from(res)
     }
 
-    pub fn atomic_update_proxy(&mut self, proxy: *const TiFlashRaftProxy) {
-        (self.atomic_update_proxy)(self.inner, proxy);
+    pub fn handle_check_tiflash_alive(&mut self) -> bool {
+        (self.handle_check_tiflash_alive)(self.inner) != 0
+    }
+
+    pub fn handle_set_proxy(&mut self, proxy: *const TiFlashRaftProxyHelper) {
+        (self.handle_set_proxy)(self.inner, proxy);
     }
 
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 5;
+        const VERSION: u32 = 6;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
@@ -400,5 +624,12 @@ impl TiFlashServerHelper {
 
     pub fn handle_check_terminated(&self) -> bool {
         (self.handle_check_terminated)(self.inner) == 1
+    }
+
+    pub(crate) fn gen_cpp_string(&self, buff: &[u8]) -> *const u8 {
+        (self.gen_cpp_string)(BaseBuffView {
+            data: buff.as_ptr(),
+            len: buff.len() as u64,
+        })
     }
 }
