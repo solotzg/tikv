@@ -182,6 +182,9 @@ pub struct Config {
     #[serde(with = "rocks_config::perf_level_serde")]
     #[config(skip)]
     pub perf_level: PerfLevel,
+
+    #[config(skip)]
+    pub store_batch_retry_recv_timeout: ReadableDuration,
 }
 
 impl Default for Config {
@@ -252,6 +255,7 @@ impl Default for Config {
             region_max_size: ReadableSize(0),
             region_split_size: ReadableSize(0),
             perf_level: PerfLevel::Disable,
+            store_batch_retry_recv_timeout: ReadableDuration::millis(4),
         }
     }
 }

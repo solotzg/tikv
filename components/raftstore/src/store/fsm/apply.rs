@@ -3047,7 +3047,7 @@ impl ApplyFsm {
                 Some(Msg::Destroy(d)) => self.handle_destroy(apply_ctx, d),
                 Some(Msg::LogsUpToDate(cul)) => self.logs_up_to_date_for_merge(apply_ctx, cul),
                 Some(Msg::Noop) => {}
-                Some(Msg::Snapshot(snap_task)) => self.handle_snapshot(apply_ctx, snap_task),
+                Some(Msg::Snapshot(_)) => unreachable!("should not request snapshot from tiflash"),
                 Some(Msg::Change {
                     cmd,
                     region_epoch,
