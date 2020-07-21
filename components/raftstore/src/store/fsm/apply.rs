@@ -1537,7 +1537,7 @@ impl ApplyDelegate {
         }
 
         get_tiflash_server_helper().handle_ingest_sst(
-            snapshot_helper.gen_snapshot_view(),
+            &mut snapshot_helper,
             RaftCmdHeader::new(
                 self.region.get_id(),
                 ctx.exec_ctx.as_ref().unwrap().index,

@@ -4,8 +4,8 @@ use std::collections::Bound::{Excluded, Included, Unbounded};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::{self, Display, Formatter};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::SyncSender;
-use std::sync::Arc;
+use std::sync::mpsc::{SyncSender, TryRecvError};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use std::u64;
 
@@ -21,7 +21,7 @@ use crate::store::peer_storage::{
     JOB_STATUS_CANCELLED, JOB_STATUS_CANCELLING, JOB_STATUS_FAILED, JOB_STATUS_FINISHED,
     JOB_STATUS_PENDING, JOB_STATUS_RUNNING,
 };
-use crate::store::snap::{plain_file_used, Error, Result, SNAPSHOT_CFS};
+use crate::store::snap::{plain_file_used, Error, PreHandledSnapshot, Result, SNAPSHOT_CFS};
 use crate::store::transport::CasualRouter;
 use crate::store::{
     self, check_abort, CasualMessage, GenericSnapshot, SnapEntry, SnapKey, SnapManager,
@@ -34,6 +34,7 @@ use tikv_util::timer::Timer;
 use tikv_util::worker::{Runnable, RunnableWithTimer};
 
 use super::metrics::*;
+use crate::tiflash_ffi;
 
 const GENERATE_POOL_SIZE: usize = 2;
 
@@ -41,7 +42,7 @@ const GENERATE_POOL_SIZE: usize = 2;
 pub const STALE_PEER_CHECK_INTERVAL: u64 = 10_000; // 10000 milliseconds
 
 // used to periodically check whether schedule pending applies in region runner
-pub const PENDING_APPLY_CHECK_INTERVAL: u64 = 1_000; // 1000 milliseconds
+pub const PENDING_APPLY_CHECK_INTERVAL: u64 = 20;
 
 const CLEANUP_MAX_DURATION: Duration = Duration::from_secs(5);
 
@@ -98,6 +99,14 @@ impl Display for Task {
             ),
         }
     }
+}
+
+struct TiFlashApplyTask {
+    region_id: u64,
+    peer_id: u64,
+    status: Arc<AtomicUsize>,
+    recv: mpsc::Receiver<Option<PreHandledSnapshot>>,
+    pre_handled_snap: Option<PreHandledSnapshot>,
 }
 
 #[derive(Clone)]
@@ -210,7 +219,6 @@ impl PendingDeleteRanges {
 #[derive(Clone)]
 struct SnapContext<R> {
     engines: Engines,
-    batch_size: usize,
     mgr: SnapManager,
     use_delete_range: bool,
     clean_stale_peer_delay: Duration,
@@ -286,13 +294,41 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
         timer.observe_duration();
     }
 
-    /// Applies snapshot data of the Region.
-    fn apply_snap(&mut self, region_id: u64, peer_id: u64, abort: Arc<AtomicUsize>) -> Result<()> {
-        info!("begin apply snap data"; "region_id" => region_id);
-        fail_point!("region_apply_snap", |_| { Ok(()) });
+    fn pre_handle_snapshot(
+        &self,
+        region_id: u64,
+        peer_id: u64,
+        abort: Arc<AtomicUsize>,
+    ) -> Result<PreHandledSnapshot> {
+        let timer = Instant::now();
         check_abort(&abort)?;
+        let (region_state, _) = self.get_region_state(region_id)?;
+        let region = region_state.get_region().clone();
+        let apply_state = self.get_apply_state(region_id)?;
+        let term = apply_state.get_truncated_state().get_term();
+        let idx = apply_state.get_truncated_state().get_index();
+        let snap_key = SnapKey::new(region_id, term, idx);
+        let s = box_try!(self.mgr.get_concrete_snapshot_for_applying(&snap_key));
+        if !s.exists() {
+            return Err(box_err!("missing snapshot file {}", s.path()));
+        }
+        check_abort(&abort)?;
+        let res = s.pre_handle_snapshot(&region, peer_id, idx, term);
+
+        info!(
+            "pre handle snapshot";
+            "region_id" => region_id,
+            "peer_id" => peer_id,
+            "state" => ?apply_state,
+            "time_takes" => ?timer.elapsed(),
+        );
+
+        Ok(res)
+    }
+
+    fn get_region_state(&self, region_id: u64) -> Result<(RegionLocalState, [u8; 11])> {
         let region_key = keys::region_state_key(region_id);
-        let mut region_state: RegionLocalState =
+        let region_state: RegionLocalState =
             match box_try!(self.engines.kv.c().get_msg_cf(CF_RAFT, &region_key)) {
                 Some(state) => state,
                 None => {
@@ -302,7 +338,33 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
                     ));
                 }
             };
+        Ok((region_state, region_key))
+    }
 
+    fn get_apply_state(&self, region_id: u64) -> Result<RaftApplyState> {
+        let state_key = keys::apply_state_key(region_id);
+        let apply_state: RaftApplyState =
+            match box_try!(self.engines.kv.c().get_msg_cf(CF_RAFT, &state_key)) {
+                Some(state) => state,
+                None => {
+                    return Err(box_err!(
+                        "failed to get raftstate from {}",
+                        hex::encode_upper(&state_key)
+                    ));
+                }
+            };
+        Ok(apply_state)
+    }
+
+    /// Applies snapshot data of the Region.
+    fn apply_snap(&mut self, task: TiFlashApplyTask) -> Result<()> {
+        let region_id = task.region_id;
+        let peer_id = task.peer_id;
+        let abort = task.status;
+        info!("begin apply snap data"; "region_id" => region_id);
+        fail_point!("region_apply_snap", |_| { Ok(()) });
+        check_abort(&abort)?;
+        let (mut region_state, region_key) = self.get_region_state(region_id)?;
         // clear up origin data.
         let region = region_state.get_region().clone();
         let start_key = keys::enc_start_key(&region);
@@ -317,17 +379,7 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
         check_abort(&abort)?;
         fail_point!("apply_snap_cleanup_range");
 
-        let state_key = keys::apply_state_key(region_id);
-        let apply_state: RaftApplyState =
-            match box_try!(self.engines.kv.c().get_msg_cf(CF_RAFT, &state_key)) {
-                Some(state) => state,
-                None => {
-                    return Err(box_err!(
-                        "failed to get raftstate from {}",
-                        hex::encode_upper(&state_key)
-                    ));
-                }
-            };
+        let apply_state = self.get_apply_state(region_id)?;
         let term = apply_state.get_truncated_state().get_term();
         let idx = apply_state.get_truncated_state().get_index();
         let snap_key = SnapKey::new(region_id, term, idx);
@@ -335,13 +387,24 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
         defer!({
             self.mgr.deregister(&snap_key, &SnapEntry::Applying);
         });
-        let s = box_try!(self.mgr.get_concrete_snapshot_for_applying(&snap_key));
-        if !s.exists() {
-            return Err(box_err!("missing snapshot file {}", s.path()));
-        }
         check_abort(&abort)?;
         let timer = Instant::now();
-        s.apply_to_tiflash(&region, peer_id, idx, term);
+        if let Some(snap) = task.pre_handled_snap {
+            info!(
+                "apply data with pre handled snap";
+                "region_id" => region_id,
+            );
+            assert_eq!(idx, snap.index);
+            assert_eq!(term, snap.term);
+            tiflash_ffi::get_tiflash_server_helper().apply_pre_handled_snapshot(snap.inner);
+        } else {
+            let s = box_try!(self.mgr.get_concrete_snapshot_for_applying(&snap_key));
+            if !s.exists() {
+                return Err(box_err!("missing snapshot file {}", s.path()));
+            }
+            check_abort(&abort)?;
+            s.apply_to_tiflash(&region, peer_id, idx, term);
+        }
 
         let mut wb = self.engines.kv.c().write_batch();
         region_state.set_state(PeerState::Normal);
@@ -359,13 +422,15 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
     }
 
     /// Tries to apply the snapshot of the specified Region. It calls `apply_snap` to do the actual work.
-    fn handle_apply(&mut self, region_id: u64, peer_id: u64, status: Arc<AtomicUsize>) {
+    fn handle_apply(&mut self, task: TiFlashApplyTask) {
+        let status = task.status.clone();
+        let region_id = task.region_id;
         status.compare_and_swap(JOB_STATUS_PENDING, JOB_STATUS_RUNNING, Ordering::SeqCst);
         SNAP_COUNTER_VEC.with_label_values(&["apply", "all"]).inc();
         let apply_histogram = SNAP_HISTOGRAM.with_label_values(&["apply"]);
         let timer = apply_histogram.start_coarse_timer();
 
-        match self.apply_snap(region_id, peer_id, Arc::clone(&status)) {
+        match self.apply_snap(task) {
             Ok(()) => {
                 status.swap(JOB_STATUS_FINISHED, Ordering::SeqCst);
                 SNAP_COUNTER_VEC
@@ -531,28 +596,27 @@ pub struct Runner<R> {
     ctx: SnapContext<R>,
     // we may delay some apply tasks if level 0 files to write stall threshold,
     // pending_applies records all delayed apply task, and will check again later
-    pending_applies: VecDeque<Task>,
+    pending_applies: VecDeque<TiFlashApplyTask>,
 }
 
 impl<R: CasualRouter<RocksEngine>> Runner<R> {
     pub fn new(
         engines: Engines,
         mgr: SnapManager,
-        batch_size: usize,
+        snap_handle_pool_size: usize,
         use_delete_range: bool,
         clean_stale_peer_delay: Duration,
         coprocessor_host: CoprocessorHost,
         router: R,
     ) -> Runner<R> {
         Runner {
-            pool: Builder::new(thd_name!("snap-generator"))
-                .max_thread_count(GENERATE_POOL_SIZE)
+            pool: Builder::new(thd_name!("snap-handler"))
+                .max_thread_count(snap_handle_pool_size)
                 .build_future_pool(),
 
             ctx: SnapContext {
                 engines,
                 mgr,
-                batch_size,
                 use_delete_range,
                 clean_stale_peer_delay,
                 pending_delete_ranges: PendingDeleteRanges::default(),
@@ -580,18 +644,22 @@ impl<R: CasualRouter<RocksEngine>> Runner<R> {
     fn handle_pending_applies(&mut self) {
         fail_point!("apply_pending_snapshot", |_| {});
         while !self.pending_applies.is_empty() {
-            // should not handle too many applies than the number of files that can be ingested.
-            // check level 0 every time because we can not make sure how does the number of level 0 files change.
-            if self.ctx.ingest_maybe_stall() {
-                break;
+            let mut stop = true;
+            match self.pending_applies.front().unwrap().recv.try_recv() {
+                Ok(pre_handled_snap) => {
+                    let mut snap = self.pending_applies.pop_front().unwrap();
+                    stop = pre_handled_snap.as_ref().map_or(false, |s| !s.empty);
+                    snap.pre_handled_snap = pre_handled_snap;
+                    self.ctx.handle_apply(snap);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    let snap = self.pending_applies.pop_front().unwrap();
+                    self.ctx.handle_apply(snap);
+                }
+                Err(TryRecvError::Empty) => {}
             }
-            if let Some(Task::Apply {
-                region_id,
-                peer_id,
-                status,
-            }) = self.pending_applies.pop_front()
-            {
-                self.ctx.handle_apply(region_id, peer_id, status);
+            if stop {
+                break;
             }
         }
     }
@@ -624,16 +692,26 @@ where
                     );
                 });
             }
-            task @ Task::Apply { .. } => {
-                // to makes sure appling snapshots in order.
-                self.pending_applies.push_back(task);
-                self.handle_pending_applies();
-                if !self.pending_applies.is_empty() {
-                    // delay the apply and retry later
-                    SNAP_COUNTER_VEC
-                        .with_label_values(&["apply", "delay"])
-                        .inc();
-                }
+            Task::Apply {
+                region_id,
+                peer_id,
+                status,
+            } => {
+                let (sender, receiver) = mpsc::channel();
+                let ctx = self.ctx.clone();
+                let abort = status.clone();
+                self.pool.spawn(async move {
+                    let _ = ctx
+                        .pre_handle_snapshot(region_id, peer_id, abort)
+                        .map_or_else(|_| sender.send(None), |s| sender.send(Some(s)));
+                });
+                self.pending_applies.push_back(TiFlashApplyTask {
+                    region_id,
+                    peer_id,
+                    status,
+                    recv: receiver,
+                    pre_handled_snap: None,
+                });
             }
             Task::Destroy {
                 region_id,

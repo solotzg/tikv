@@ -1180,7 +1180,7 @@ impl RaftBatchSystem {
         let region_runner = RegionRunner::new(
             engines.clone(),
             snap_mgr,
-            cfg.snap_apply_batch_size.0 as usize,
+            cfg.snap_handle_pool_size,
             cfg.use_delete_range,
             cfg.clean_stale_peer_delay.0,
             workers.coprocessor_host.clone(),

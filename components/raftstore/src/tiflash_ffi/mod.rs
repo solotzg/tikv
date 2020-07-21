@@ -410,7 +410,7 @@ pub struct SnapshotView {
 }
 
 #[repr(C)]
-pub struct SnapshotViewArray {
+struct SnapshotViewArray {
     views: *const SnapshotView,
     len: u64,
 }
@@ -427,7 +427,7 @@ impl SnapshotHelper {
         self.cf_snaps.push((cf_type, snap_kv));
     }
 
-    pub fn gen_snapshot_view(&mut self) -> SnapshotViewArray {
+    fn gen_snapshot_view(&mut self) -> SnapshotViewArray {
         let len = self.cf_snaps.len();
         self.kv_view.clear();
         self.snap_view.clear();
@@ -449,6 +449,10 @@ impl SnapshotHelper {
             views: self.snap_view.as_ptr(),
             len: self.snap_view.len() as u64,
         }
+    }
+
+    pub fn empty(&self) -> bool {
+        self.cf_snaps.len() == 0
     }
 }
 
@@ -525,6 +529,16 @@ pub struct TiFlashServerHelper {
     handle_check_terminated: extern "C" fn(TiFlashServerPtr) -> u8,
     handle_compute_fs_stats: extern "C" fn(TiFlashServerPtr) -> FsStats,
     handle_check_tiflash_alive: extern "C" fn(TiFlashServerPtr) -> u8,
+    pre_handle_snapshot: extern "C" fn(
+        TiFlashServerPtr,
+        BaseBuffView,
+        u64,
+        SnapshotViewArray,
+        u64,
+        u64,
+    ) -> *const u8,
+    apply_pre_handled_snapshot: extern "C" fn(TiFlashServerPtr, *const u8),
+    gc_pre_handled_snapshot: extern "C" fn(TiFlashServerPtr, *const u8),
 }
 
 unsafe impl Send for TiFlashServerHelper {}
@@ -564,7 +578,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 6;
+        const VERSION: u32 = 7;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
@@ -600,7 +614,7 @@ impl TiFlashServerHelper {
         &self,
         region: &metapb::Region,
         peer_id: u64,
-        snaps: SnapshotViewArray,
+        snaps: &mut SnapshotHelper,
         index: u64,
         term: u64,
     ) {
@@ -608,14 +622,40 @@ impl TiFlashServerHelper {
             self.inner,
             ProtoMsgBaseBuff::new(region).buff_view,
             peer_id,
-            snaps,
+            snaps.gen_snapshot_view(),
             index,
             term,
         );
     }
 
-    pub fn handle_ingest_sst(&self, snaps: SnapshotViewArray, header: RaftCmdHeader) {
-        (self.handle_ingest_sst)(self.inner, snaps, header);
+    pub fn pre_handle_snapshot(
+        &self,
+        region: &metapb::Region,
+        peer_id: u64,
+        snaps: &mut SnapshotHelper,
+        index: u64,
+        term: u64,
+    ) -> *const u8 {
+        (self.pre_handle_snapshot)(
+            self.inner,
+            ProtoMsgBaseBuff::new(region).buff_view,
+            peer_id,
+            snaps.gen_snapshot_view(),
+            index,
+            term,
+        )
+    }
+
+    pub fn apply_pre_handled_snapshot(&self, s: *const u8) {
+        (self.apply_pre_handled_snapshot)(self.inner, s)
+    }
+
+    pub fn gc_pre_handled_snapshot(&self, s: *const u8) {
+        (self.gc_pre_handled_snapshot)(self.inner, s)
+    }
+
+    pub fn handle_ingest_sst(&self, snaps: &mut SnapshotHelper, header: RaftCmdHeader) {
+        (self.handle_ingest_sst)(self.inner, snaps.gen_snapshot_view(), header);
     }
 
     pub fn handle_destroy(&self, region_id: RegionId) {

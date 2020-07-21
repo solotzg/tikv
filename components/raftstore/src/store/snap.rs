@@ -344,6 +344,22 @@ pub struct Snap {
     mgr: SnapManagerCore,
 }
 
+pub struct PreHandledSnapshot {
+    pub empty: bool,
+    pub index: u64,
+    pub term: u64,
+    pub inner: *const u8,
+}
+
+impl Drop for PreHandledSnapshot {
+    fn drop(&mut self) {
+        tiflash_ffi::get_tiflash_server_helper().gc_pre_handled_snapshot(self.inner);
+        self.inner = std::ptr::null();
+    }
+}
+
+unsafe impl Send for PreHandledSnapshot {}
+
 impl Snap {
     fn read_lock_cf_file(
         path: &str,
@@ -371,13 +387,7 @@ impl Snap {
         lock_cf_snap
     }
 
-    pub fn apply_to_tiflash(
-        &self,
-        region: &kvproto::metapb::Region,
-        peer_id: u64,
-        idx: u64,
-        term: u64,
-    ) {
+    fn gen_snapshot_helper(&self, region: &kvproto::metapb::Region) -> tiflash_ffi::SnapshotHelper {
         let mut snapshot_helper = tiflash_ffi::SnapshotHelper::default();
 
         for cf_file in &self.cf_files {
@@ -417,14 +427,49 @@ impl Snap {
 
             snapshot_helper.add_cf_snap(cf_type, snap_kv);
         }
+        snapshot_helper
+    }
+
+    pub fn apply_to_tiflash(
+        &self,
+        region: &kvproto::metapb::Region,
+        peer_id: u64,
+        idx: u64,
+        term: u64,
+    ) {
+        let mut snapshot_helper = self.gen_snapshot_helper(region);
 
         tiflash_ffi::get_tiflash_server_helper().handle_apply_snapshot(
             &region,
             peer_id,
-            snapshot_helper.gen_snapshot_view(),
+            &mut snapshot_helper,
             idx,
             term,
         );
+    }
+
+    pub fn pre_handle_snapshot(
+        &self,
+        region: &kvproto::metapb::Region,
+        peer_id: u64,
+        index: u64,
+        term: u64,
+    ) -> PreHandledSnapshot {
+        let mut snapshot_helper = self.gen_snapshot_helper(region);
+        let res = tiflash_ffi::get_tiflash_server_helper().pre_handle_snapshot(
+            &region,
+            peer_id,
+            &mut snapshot_helper,
+            index,
+            term,
+        );
+
+        PreHandledSnapshot {
+            empty: snapshot_helper.empty(),
+            index,
+            term,
+            inner: res,
+        }
     }
 }
 
