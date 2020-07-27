@@ -528,7 +528,7 @@ pub struct TiFlashServerHelper {
     handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader),
     handle_check_terminated: extern "C" fn(TiFlashServerPtr) -> u8,
     handle_compute_fs_stats: extern "C" fn(TiFlashServerPtr) -> FsStats,
-    handle_check_tiflash_alive: extern "C" fn(TiFlashServerPtr) -> u8,
+    handle_get_tiflash_status: extern "C" fn(TiFlashServerPtr) -> u8,
     pre_handle_snapshot: extern "C" fn(
         TiFlashServerPtr,
         BaseBuffView,
@@ -553,6 +553,24 @@ pub fn get_tiflash_server_helper_mut() -> &'static mut TiFlashServerHelper {
     return unsafe { &mut (*(TIFLASH_SERVER_HELPER_PTR as *mut TiFlashServerHelper)) };
 }
 
+#[derive(Eq, PartialEq)]
+pub enum TiFlashStatus {
+    IDLE,
+    Running,
+    Stopped,
+}
+
+impl From<u8> for TiFlashStatus {
+    fn from(s: u8) -> Self {
+        match s {
+            0 => TiFlashStatus::IDLE,
+            1 => TiFlashStatus::Running,
+            2 => TiFlashStatus::Stopped,
+            _ => unreachable!(),
+        }
+    }
+}
+
 impl TiFlashServerHelper {
     pub fn handle_compute_fs_stats(&self) -> FsStats {
         (self.handle_compute_fs_stats)(self.inner)
@@ -567,8 +585,8 @@ impl TiFlashServerHelper {
         TiFlashApplyRes::from(res)
     }
 
-    pub fn handle_check_tiflash_alive(&mut self) -> bool {
-        (self.handle_check_tiflash_alive)(self.inner) != 0
+    pub fn handle_get_tiflash_status(&mut self) -> TiFlashStatus {
+        (self.handle_get_tiflash_status)(self.inner).into()
     }
 
     pub fn handle_set_proxy(&mut self, proxy: *const TiFlashRaftProxyHelper) {
@@ -578,7 +596,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 7;
+        const VERSION: u32 = 8;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(

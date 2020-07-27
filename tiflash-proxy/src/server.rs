@@ -71,7 +71,7 @@ use tikv_util::{
 };
 
 use raftstore::tiflash_ffi::{
-    get_tiflash_server_helper_mut, TiFlashRaftProxy, TiFlashRaftProxyHelper,
+    get_tiflash_server_helper_mut, TiFlashRaftProxy, TiFlashRaftProxyHelper, TiFlashStatus,
 };
 
 /// Run a TiKV server. Returns when the server is shutdown by the user, in which
@@ -112,9 +112,15 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     get_tiflash_server_helper_mut().handle_set_proxy(&proxy_helper);
 
     info!("wait for tiflash server to start");
-    while !get_tiflash_server_helper_mut().handle_check_tiflash_alive() {
+    while get_tiflash_server_helper_mut().handle_get_tiflash_status() == TiFlashStatus::IDLE {
         thread::sleep(Duration::from_millis(200));
     }
+
+    if get_tiflash_server_helper_mut().handle_get_tiflash_status() != TiFlashStatus::Running {
+        info!("tiflash server is not running, make proxy exit");
+        return;
+    }
+
     info!("tiflash server is started");
 
     tikv.init_engines();
@@ -136,7 +142,7 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     info!("all services in tiflash proxy are stopped");
 
     info!("wait for tiflash server to stop");
-    while get_tiflash_server_helper_mut().handle_check_tiflash_alive() {
+    while get_tiflash_server_helper_mut().handle_get_tiflash_status() != TiFlashStatus::Stopped {
         thread::sleep(Duration::from_millis(200));
     }
     info!("tiflash server is stopped");
