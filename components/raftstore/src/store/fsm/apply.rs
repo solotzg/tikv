@@ -712,6 +712,8 @@ pub struct ApplyDelegate {
 
     /// The local metrics, and it will be flushed periodically.
     metrics: ApplyMetrics,
+
+    pending_clean_ssts: Vec<SstMeta>,
 }
 
 impl ApplyDelegate {
@@ -736,6 +738,7 @@ impl ApplyDelegate {
             last_merge_version: 0,
             pending_request_snapshot_count: reg.pending_request_snapshot_count,
             observe_cmd: None,
+            pending_clean_ssts: vec![],
         }
     }
 
@@ -1318,12 +1321,42 @@ impl ApplyDelegate {
 
         return if !ssts.is_empty() {
             assert_eq!(cmds.len(), 0);
-            self.handle_ingest_sst_for_tiflash(&ctx, &ssts);
-            Ok((
-                RaftCmdResponse::new(),
-                ApplyResult::Res(ExecResult::IngestSst { ssts }),
-                TiFlashApplyRes::Persist,
-            ))
+            match self.handle_ingest_sst_for_tiflash(&ctx, &ssts) {
+                TiFlashApplyRes::None => {
+                    self.pending_clean_ssts.append(&mut ssts);
+                    info!(
+                        "skip persist for ingest sst";
+                        "region_id" => self.region_id(),
+                        "peer_id" => self.id(),
+                        "term" => ctx.exec_ctx.as_ref().unwrap().term,
+                        "index" => ctx.exec_ctx.as_ref().unwrap().index,
+                        "pending_ssts" => ?self.pending_clean_ssts
+                    );
+
+                    Ok((
+                        RaftCmdResponse::new(),
+                        ApplyResult::None,
+                        TiFlashApplyRes::None,
+                    ))
+                }
+                TiFlashApplyRes::NotFound | TiFlashApplyRes::Persist => {
+                    ssts.append(&mut self.pending_clean_ssts);
+                    info!(
+                        "ingest sst success";
+                        "region_id" => self.region_id(),
+                        "peer_id" => self.id(),
+                        "term" => ctx.exec_ctx.as_ref().unwrap().term,
+                        "index" => ctx.exec_ctx.as_ref().unwrap().index,
+                        "ssts_to_clean" => ?ssts
+                    );
+
+                    Ok((
+                        RaftCmdResponse::new(),
+                        ApplyResult::Res(ExecResult::IngestSst { ssts }),
+                        TiFlashApplyRes::Persist,
+                    ))
+                }
+            }
         } else {
             let flash_res = {
                 get_tiflash_server_helper().handle_write_raft_cmd(
@@ -1500,7 +1533,7 @@ impl ApplyDelegate {
         &mut self,
         ctx: &ApplyContext<W>,
         ssts: &Vec<SstMeta>,
-    ) {
+    ) -> TiFlashApplyRes {
         let mut snapshot_helper = SnapshotHelper::default();
 
         for sst in ssts {
@@ -1543,7 +1576,7 @@ impl ApplyDelegate {
                 ctx.exec_ctx.as_ref().unwrap().index,
                 ctx.exec_ctx.as_ref().unwrap().term,
             ),
-        );
+        )
     }
 
     fn handle_ingest_sst(

@@ -526,7 +526,7 @@ pub struct TiFlashServerHelper {
         extern "C" fn(TiFlashServerPtr, BaseBuffView, u64, SnapshotViewArray, u64, u64),
     handle_set_proxy: extern "C" fn(TiFlashServerPtr, *const TiFlashRaftProxyHelper),
     handle_destroy: extern "C" fn(TiFlashServerPtr, RegionId),
-    handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader),
+    handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader) -> u32,
     handle_check_terminated: extern "C" fn(TiFlashServerPtr) -> u8,
     handle_compute_fs_stats: extern "C" fn(TiFlashServerPtr) -> FsStats,
     handle_get_tiflash_status: extern "C" fn(TiFlashServerPtr) -> u8,
@@ -597,7 +597,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 8;
+        const VERSION: u32 = 9;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
@@ -673,8 +673,13 @@ impl TiFlashServerHelper {
         (self.gc_pre_handled_snapshot)(self.inner, s)
     }
 
-    pub fn handle_ingest_sst(&self, snaps: &mut SnapshotHelper, header: RaftCmdHeader) {
-        (self.handle_ingest_sst)(self.inner, snaps.gen_snapshot_view(), header);
+    pub fn handle_ingest_sst(
+        &self,
+        snaps: &mut SnapshotHelper,
+        header: RaftCmdHeader,
+    ) -> TiFlashApplyRes {
+        let res = (self.handle_ingest_sst)(self.inner, snaps.gen_snapshot_view(), header);
+        TiFlashApplyRes::from(res)
     }
 
     pub fn handle_destroy(&self, region_id: RegionId) {

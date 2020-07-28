@@ -101,7 +101,7 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     tikv.init_yatp();
     tikv.init_encryption();
 
-    let mut proxy = TiFlashRaftProxy {
+    let proxy = TiFlashRaftProxy {
         stopped: AtomicBool::default(),
         key_manager: tikv.encryption_key_manager.clone(),
     };

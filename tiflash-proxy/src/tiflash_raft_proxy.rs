@@ -1,8 +1,5 @@
 // Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
-#![feature(slice_patterns)]
-#![feature(proc_macro_hygiene)]
-
 use std::process;
 
 use crate::setup::validate_and_persist_config;
