@@ -7,6 +7,7 @@ use engine_traits::{
 };
 use kvproto::{metapb, raft_cmdpb};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 type TiFlashServerPtr = *const u8;
@@ -32,7 +33,7 @@ impl From<u32> for TiFlashApplyRes {
 }
 
 pub struct TiFlashRaftProxy {
-    pub stopped: u8,
+    pub stopped: AtomicBool,
     pub key_manager: Option<Arc<DataKeyManager>>,
 }
 
@@ -40,7 +41,7 @@ type TiFlashRaftProxyPtr = *const TiFlashRaftProxy;
 
 #[no_mangle]
 pub extern "C" fn ffi_handle_check_stopped(proxy_ptr: TiFlashRaftProxyPtr) -> u8 {
-    unsafe { (*proxy_ptr).stopped }
+    unsafe { (*proxy_ptr).stopped.load(Ordering::SeqCst) as u8 }
 }
 
 #[no_mangle]
@@ -681,7 +682,7 @@ impl TiFlashServerHelper {
     }
 
     pub fn handle_check_terminated(&self) -> bool {
-        (self.handle_check_terminated)(self.inner) == 1
+        (self.handle_check_terminated)(self.inner) != 0
     }
 
     pub(crate) fn gen_cpp_string(&self, buff: &[u8]) -> *const u8 {

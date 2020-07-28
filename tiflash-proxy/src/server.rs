@@ -73,6 +73,7 @@ use tikv_util::{
 use raftstore::tiflash_ffi::{
     get_tiflash_server_helper_mut, TiFlashRaftProxy, TiFlashRaftProxyHelper, TiFlashStatus,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Run a TiKV server. Returns when the server is shutdown by the user, in which
 /// case the server will be properly stopped.
@@ -101,7 +102,7 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     tikv.init_encryption();
 
     let mut proxy = TiFlashRaftProxy {
-        stopped: 0,
+        stopped: AtomicBool::default(),
         key_manager: tikv.encryption_key_manager.clone(),
     };
 
@@ -137,7 +138,7 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
 
     tikv.stop();
 
-    proxy.stopped = 1;
+    proxy.stopped.store(true, Ordering::SeqCst);
 
     info!("all services in tiflash proxy are stopped");
 
