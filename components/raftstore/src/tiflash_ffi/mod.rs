@@ -464,8 +464,17 @@ pub struct BaseBuffView {
 }
 
 impl BaseBuffView {
-    pub(crate) fn to_slice(&self) -> &[u8] {
+    pub fn to_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.data, self.len as usize) }
+    }
+}
+
+impl Default for BaseBuffView {
+    fn default() -> Self {
+        Self {
+            data: std::ptr::null(),
+            len: 0,
+        }
     }
 }
 
@@ -513,6 +522,23 @@ pub struct FsStats {
 }
 
 #[repr(C)]
+pub struct CppStrWithView {
+    inner: *const u8,
+    pub view: BaseBuffView,
+}
+
+impl Drop for CppStrWithView {
+    fn drop(&mut self) {
+        if self.inner == std::ptr::null() {
+            return;
+        }
+        get_tiflash_server_helper().gc_cpp_string(self.inner);
+        self.inner = std::ptr::null();
+        self.view = Default::default();
+    }
+}
+
+#[repr(C)]
 pub struct TiFlashServerHelper {
     magic_number: u32,
     version: u32,
@@ -540,6 +566,8 @@ pub struct TiFlashServerHelper {
     ) -> *const u8,
     apply_pre_handled_snapshot: extern "C" fn(TiFlashServerPtr, *const u8),
     gc_pre_handled_snapshot: extern "C" fn(TiFlashServerPtr, *const u8),
+    handle_get_table_sync_status: extern "C" fn(TiFlashServerPtr, u64) -> CppStrWithView,
+    gc_cpp_string: extern "C" fn(TiFlashServerPtr, *const u8),
 }
 
 unsafe impl Send for TiFlashServerHelper {}
@@ -573,6 +601,14 @@ impl From<u8> for TiFlashStatus {
 }
 
 impl TiFlashServerHelper {
+    pub fn handle_get_table_sync_status(&self, table_id: u64) -> CppStrWithView {
+        (self.handle_get_table_sync_status)(self.inner, table_id)
+    }
+
+    pub fn gc_cpp_string(&self, s: *const u8) {
+        (self.gc_cpp_string)(self.inner, s)
+    }
+
     pub fn handle_compute_fs_stats(&self) -> FsStats {
         (self.handle_compute_fs_stats)(self.inner)
     }
@@ -597,7 +633,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 9;
+        const VERSION: u32 = 10;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
