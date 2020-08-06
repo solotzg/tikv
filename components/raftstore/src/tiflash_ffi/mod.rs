@@ -45,8 +45,18 @@ pub extern "C" fn ffi_handle_check_stopped(proxy_ptr: TiFlashRaftProxyPtr) -> u8
 }
 
 #[no_mangle]
-pub extern "C" fn ffi_handle_enable_encryption(proxy_ptr: TiFlashRaftProxyPtr) -> u8 {
+pub extern "C" fn ffi_is_encryption_enabled(proxy_ptr: TiFlashRaftProxyPtr) -> u8 {
     unsafe { (*proxy_ptr).key_manager.is_some().into() }
+}
+
+#[no_mangle]
+pub extern "C" fn ffi_encryption_method(proxy_ptr: TiFlashRaftProxyPtr) -> u8 {
+    unsafe {
+        (*proxy_ptr)
+            .key_manager
+            .as_ref()
+            .map_or(EncryptionMethod::Plaintext, |x| x.encryption_method()) as u8
+    }
 }
 
 enum FileEncryptionRes {
@@ -235,7 +245,8 @@ pub extern "C" fn ffi_handle_rename_file(
 pub struct TiFlashRaftProxyHelper {
     proxy_ptr: TiFlashRaftProxyPtr,
     handle_check_stopped: extern "C" fn(TiFlashRaftProxyPtr) -> u8,
-    handle_enable_encryption: extern "C" fn(TiFlashRaftProxyPtr) -> u8,
+    is_encryption_enabled: extern "C" fn(TiFlashRaftProxyPtr) -> u8,
+    encryption_method: extern "C" fn(TiFlashRaftProxyPtr) -> u8,
     handle_get_file: extern "C" fn(TiFlashRaftProxyPtr, BaseBuffView) -> FileEncryptionInfoRes,
     handle_new_file: extern "C" fn(TiFlashRaftProxyPtr, BaseBuffView) -> FileEncryptionInfoRes,
     handle_delete_file: extern "C" fn(TiFlashRaftProxyPtr, BaseBuffView) -> FileEncryptionInfoRes,
@@ -250,7 +261,8 @@ impl TiFlashRaftProxyHelper {
         TiFlashRaftProxyHelper {
             proxy_ptr: proxy,
             handle_check_stopped: ffi_handle_check_stopped,
-            handle_enable_encryption: ffi_handle_enable_encryption,
+            is_encryption_enabled: ffi_is_encryption_enabled,
+            encryption_method: ffi_encryption_method,
             handle_get_file: ffi_handle_get_file,
             handle_new_file: ffi_handle_new_file,
             handle_delete_file: ffi_handle_delete_file,
@@ -633,7 +645,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 10;
+        const VERSION: u32 = 11;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
