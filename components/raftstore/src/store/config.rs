@@ -115,6 +115,9 @@ pub struct Config {
     #[config(skip)]
     pub snap_apply_batch_size: ReadableSize,
 
+    #[config(skip)]
+    pub snap_handle_pool_size: usize,
+
     // Interval (ms) to check region whether the data is consistent.
     pub consistency_check_interval: ReadableDuration,
 
@@ -183,6 +186,9 @@ pub struct Config {
     #[serde(with = "rocks_config::perf_level_serde")]
     #[config(skip)]
     pub perf_level: PerfLevel,
+
+    #[config(skip)]
+    pub store_batch_retry_recv_timeout: ReadableDuration,
 }
 
 impl Default for Config {
@@ -226,6 +232,7 @@ impl Default for Config {
             peer_stale_state_check_interval: ReadableDuration::minutes(5),
             leader_transfer_max_log_lag: 10,
             snap_apply_batch_size: ReadableSize::mb(10),
+            snap_handle_pool_size: 2,
             lock_cf_compact_interval: ReadableDuration::minutes(10),
             lock_cf_compact_bytes_threshold: ReadableSize::mb(256),
             // Disable consistency check by default as it will hurt performance.
@@ -254,6 +261,7 @@ impl Default for Config {
             region_split_size: ReadableSize(0),
             clean_stale_peer_delay: ReadableDuration::minutes(0),
             perf_level: PerfLevel::Disable,
+            store_batch_retry_recv_timeout: ReadableDuration::millis(4),
         }
     }
 }
@@ -524,6 +532,10 @@ impl Config {
         CONFIG_RAFTSTORE_GAUGE
             .with_label_values(&["snap_apply_batch_size"])
             .set(self.snap_apply_batch_size.0 as f64);
+
+        CONFIG_RAFTSTORE_GAUGE
+            .with_label_values(&["snap-handle-pool-size"])
+            .set(self.snap_handle_pool_size as f64);
 
         CONFIG_RAFTSTORE_GAUGE
             .with_label_values(&["consistency_check_interval_seconds"])

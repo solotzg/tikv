@@ -15,7 +15,6 @@ use engine_traits::{KvEngines, MetricsFlusher};
 use fs2::FileExt;
 use futures_cpupool::Builder;
 use kvproto::{
-    backup::create_backup, cdcpb::create_change_data, deadlock::create_deadlock,
     debugpb::create_debug, diagnosticspb::create_diagnostics, import_sstpb::create_import_sst,
 };
 use pd_client::{PdClient, RpcClient};
@@ -38,6 +37,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    thread,
     thread::JoinHandle,
 };
 use tikv::{
@@ -48,8 +48,8 @@ use tikv::{
     server::{
         config::Config as ServerConfig,
         create_raft_storage,
-        gc_worker::{AutoGcConfig, GcWorker},
-        lock_manager::LockManager,
+        gc_worker::GcWorker,
+        lock_manager::HackedLockManager as LockManager,
         resolve,
         service::{DebugService, DiagnosticsService},
         status_server::StatusServer,
@@ -66,16 +66,22 @@ use tikv_util::{
     worker::{FutureWorker, Worker},
 };
 
+use raftstore::tiflash_ffi::{
+    get_tiflash_server_helper_mut, TiFlashRaftProxy, TiFlashRaftProxyHelper, TiFlashStatus,
+};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
 /// Run a TiKV server. Returns when the server is shutdown by the user, in which
 /// case the server will be properly stopped.
-pub fn run_tikv(config: TiKvConfig) {
+pub unsafe fn run_tikv(config: TiKvConfig) {
     // Sets the global logger ASAP.
     // It is okay to use the config w/o `validate()`,
     // because `initial_logger()` handles various conditions.
     initial_logger(&config);
 
     // Print version information.
-    tikv::log_tikv_info();
+    crate::log_proxy_info();
 
     // Print resource quota.
     SysQuota::new().log_quota();
@@ -91,6 +97,30 @@ pub fn run_tikv(config: TiKvConfig) {
     tikv.init_fs();
     tikv.init_yatp();
     tikv.init_encryption();
+
+    let proxy = TiFlashRaftProxy {
+        stopped: AtomicBool::default(),
+        key_manager: tikv.encryption_key_manager.clone(),
+    };
+
+    let proxy_helper = TiFlashRaftProxyHelper::new(&proxy);
+
+    info!("set tiflash proxy helper");
+
+    get_tiflash_server_helper_mut().handle_set_proxy(&proxy_helper);
+
+    info!("wait for tiflash server to start");
+    while get_tiflash_server_helper_mut().handle_get_tiflash_status() == TiFlashStatus::IDLE {
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    if get_tiflash_server_helper_mut().handle_get_tiflash_status() != TiFlashStatus::Running {
+        info!("tiflash server is not running, make proxy exit");
+        return;
+    }
+
+    info!("tiflash server is started");
+
     tikv.init_engines();
     let gc_worker = tikv.init_gc_worker();
     let server_config = tikv.init_servers(&gc_worker);
@@ -101,7 +131,19 @@ pub fn run_tikv(config: TiKvConfig) {
 
     signal_handler::wait_for_signal(Some(tikv.engines.take().unwrap().engines));
 
+    info!("got terminal signal from tiflash and stop all services");
+
     tikv.stop();
+
+    proxy.stopped.store(true, Ordering::SeqCst);
+
+    info!("all services in tiflash proxy are stopped");
+
+    info!("wait for tiflash server to stop");
+    while get_tiflash_server_helper_mut().handle_get_tiflash_status() != TiFlashStatus::Stopped {
+        thread::sleep(Duration::from_millis(200));
+    }
+    info!("tiflash server is stopped");
 }
 
 const RESERVED_OPEN_FDS: u64 = 1000;
@@ -138,7 +180,6 @@ struct Servers {
     server: Server<ServerRaftStoreRouter<RocksEngine>, resolve::PdStoreAddrResolver>,
     node: Node<RpcClient>,
     importer: Arc<SSTImporter>,
-    cdc_scheduler: tikv_util::worker::Scheduler<cdc::Task>,
 }
 
 impl TiKVServer {
@@ -415,9 +456,6 @@ impl TiKVServer {
         gc_worker
             .start()
             .unwrap_or_else(|e| fatal!("failed to start gc worker: {}", e));
-        gc_worker
-            .start_observe_lock_apply(self.coprocessor_host.as_mut().unwrap())
-            .unwrap_or_else(|e| fatal!("gc worker failed to observe lock apply: {}", e));
 
         gc_worker
     }
@@ -433,14 +471,9 @@ impl TiKVServer {
         );
 
         // Create CoprocessorHost.
-        let mut coprocessor_host = self.coprocessor_host.take().unwrap();
+        let coprocessor_host = self.coprocessor_host.take().unwrap();
 
         let lock_mgr = LockManager::new();
-        cfg_controller.register(
-            tikv::config::Module::PessimisticTxn,
-            Box::new(lock_mgr.config_manager()),
-        );
-        lock_mgr.register_detector_role_change_observer(&mut coprocessor_host);
 
         let engines = self.engines.as_ref().unwrap();
 
@@ -506,12 +539,6 @@ impl TiKVServer {
             ));
             cop_read_pools.handle()
         };
-
-        // Create and register cdc.
-        let mut cdc_worker = Box::new(tikv_util::worker::Worker::new("cdc"));
-        let cdc_scheduler = cdc_worker.scheduler();
-        let cdc_ob = cdc::CdcObserver::new(cdc_scheduler.clone());
-        cdc_ob.register_to(&mut coprocessor_host);
 
         let server_config = Arc::new(self.config.server.clone());
 
@@ -588,37 +615,11 @@ impl TiKVServer {
 
         initial_metric(&self.config.metric, Some(node.id()));
 
-        // Start auto gc
-        let auto_gc_config = AutoGcConfig::new(
-            self.pd_client.clone(),
-            self.region_info_accessor.clone(),
-            node.id(),
-        );
-        if let Err(e) = gc_worker.start_auto_gc(auto_gc_config) {
-            fatal!("failed to start auto_gc on storage, error: {}", e);
-        }
-
-        // Start CDC.
-        let raft_router = self.engines.as_ref().unwrap().raft_router.clone();
-        let cdc_endpoint = cdc::Endpoint::new(
-            self.pd_client.clone(),
-            cdc_worker.scheduler(),
-            raft_router,
-            cdc_ob,
-            engines.store_meta.clone(),
-        );
-        let cdc_timer = cdc_endpoint.new_timer();
-        cdc_worker
-            .start_with_timer(cdc_endpoint, cdc_timer)
-            .unwrap_or_else(|e| fatal!("failed to start cdc: {}", e));
-        self.to_stop.push(cdc_worker);
-
         self.servers = Some(Servers {
             lock_mgr,
             server,
             node,
             importer,
-            cdc_scheduler,
         });
 
         server_config
@@ -682,68 +683,6 @@ impl TiKVServer {
         {
             fatal!("failed to register diagnostics service");
         }
-
-        // Lock manager.
-        if servers
-            .server
-            .register_service(create_deadlock(
-                servers.lock_mgr.deadlock_service(self.security_mgr.clone()),
-            ))
-            .is_some()
-        {
-            fatal!("failed to register deadlock service");
-        }
-
-        servers
-            .lock_mgr
-            .start(
-                servers.node.id(),
-                self.pd_client.clone(),
-                self.resolver.clone(),
-                self.security_mgr.clone(),
-                &self.config.pessimistic_txn,
-            )
-            .unwrap_or_else(|e| fatal!("failed to start lock manager: {}", e));
-
-        // Backup service.
-        let mut backup_worker = Box::new(tikv_util::worker::Worker::new("backup-endpoint"));
-        let backup_scheduler = backup_worker.scheduler();
-        let backup_service = backup::Service::new(backup_scheduler, self.security_mgr.clone());
-        if servers
-            .server
-            .register_service(create_backup(backup_service))
-            .is_some()
-        {
-            fatal!("failed to register backup service");
-        }
-
-        let backup_endpoint = backup::Endpoint::new(
-            servers.node.id(),
-            engines.engine.clone(),
-            self.region_info_accessor.clone(),
-            engines.engines.kv.as_inner().clone(),
-            self.config.backup.clone(),
-        );
-        self.cfg_controller.as_mut().unwrap().register(
-            tikv::config::Module::Backup,
-            Box::new(backup_endpoint.get_config_manager()),
-        );
-        let backup_timer = backup_endpoint.new_timer();
-        backup_worker
-            .start_with_timer(backup_endpoint, backup_timer)
-            .unwrap_or_else(|e| fatal!("failed to start backup endpoint: {}", e));
-
-        let cdc_service =
-            cdc::Service::new(servers.cdc_scheduler.clone(), self.security_mgr.clone());
-        if servers
-            .server
-            .register_service(create_change_data(cdc_service))
-            .is_some()
-        {
-            fatal!("failed to register cdc service");
-        }
-
-        self.to_stop.push(backup_worker);
     }
 
     fn init_metrics_flusher(&mut self) {
