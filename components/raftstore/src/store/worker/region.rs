@@ -43,6 +43,12 @@ pub const PENDING_APPLY_CHECK_INTERVAL: u64 = 20;
 
 const CLEANUP_MAX_DURATION: Duration = Duration::from_secs(5);
 
+impl std::fmt::Debug for tiflash_ffi::RawCppPtr {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
 /// Region related task
 #[derive(Debug)]
 pub enum Task<S> {
@@ -52,6 +58,7 @@ pub enum Task<S> {
         last_applied_state: RaftApplyState,
         kv_snap: S,
         notifier: SyncSender<RaftSnapshot>,
+        tiflash_snap: tiflash_ffi::RawCppPtr,
     },
     Apply {
         region_id: u64,
@@ -249,6 +256,7 @@ where
         last_applied_state: RaftApplyState,
         kv_snap: EK::Snapshot,
         notifier: SyncSender<RaftSnapshot>,
+        tiflash_snap: tiflash_ffi::RawCppPtr,
     ) -> Result<()> {
         // do we need to check leader here?
         let snap = box_try!(store::do_snapshot::<EK>(
@@ -258,6 +266,7 @@ where
             region_id,
             last_applied_index_term,
             last_applied_state,
+            tiflash_snap,
         ));
         // Only enable the fail point when the region id is equal to 1, which is
         // the id of bootstrapped region in tests.
@@ -284,6 +293,7 @@ where
         last_applied_state: RaftApplyState,
         kv_snap: EK::Snapshot,
         notifier: SyncSender<RaftSnapshot>,
+        tiflash_snap: tiflash_ffi::RawCppPtr,
     ) {
         SNAP_COUNTER.generate.all.inc();
         let start = tikv_util::time::Instant::now();
@@ -294,6 +304,7 @@ where
             last_applied_state,
             kv_snap,
             notifier,
+            tiflash_snap,
         ) {
             error!(%e; "failed to generate snap!!!"; "region_id" => region_id,);
             return;
@@ -404,7 +415,8 @@ where
             );
             assert_eq!(idx, snap.index);
             assert_eq!(term, snap.term);
-            tiflash_ffi::get_tiflash_server_helper().apply_pre_handled_snapshot(snap.inner);
+            tiflash_ffi::get_tiflash_server_helper()
+                .apply_pre_handled_snapshot(snap.inner.raw_ptr(), snap.inner.get_type());
         } else {
             info!(
                 "apply data to tiflash";
@@ -415,7 +427,11 @@ where
                 return Err(box_err!("missing snapshot file {}", s.path()));
             }
             check_abort(&abort)?;
-            s.apply_to_tiflash(&region, peer_id, idx, term);
+            let pre_handled_snap = s.pre_handle_snapshot(&region, peer_id, idx, term);
+            tiflash_ffi::get_tiflash_server_helper().apply_pre_handled_snapshot(
+                pre_handled_snap.inner.raw_ptr(),
+                pre_handled_snap.inner.get_type(),
+            );
         }
 
         let mut wb = self.engines.kv.write_batch();
@@ -720,6 +736,7 @@ where
                 last_applied_state,
                 kv_snap,
                 notifier,
+                tiflash_snap,
             } => {
                 // It is safe for now to handle generating and applying snapshot concurrently,
                 // but it may not when merge is implemented.
@@ -733,6 +750,7 @@ where
                         last_applied_state,
                         kv_snap,
                         notifier,
+                        tiflash_snap,
                     );
                     tikv_alloc::remove_thread_memory_accessor();
                 });

@@ -25,7 +25,6 @@ use kvproto::replication_modepb::RegionReplicationStatus;
 use prometheus::local::LocalHistogram;
 use raft::eraftpb::ConfChangeType;
 
-use crate::coprocessor::{get_region_approximate_keys, get_region_approximate_size};
 use crate::store::cmd_resp::new_error;
 use crate::store::metrics::*;
 use crate::store::util::{is_epoch_stale, ConfChangeKind, KeysInfoFormatter};
@@ -1039,12 +1038,14 @@ where
                 approximate_keys,
                 replication_status,
             } => {
-                let approximate_size = approximate_size.unwrap_or_else(|| {
-                    get_region_approximate_size(&self.db, &region, 0).unwrap_or_default()
-                });
-                let approximate_keys = approximate_keys.unwrap_or_else(|| {
-                    get_region_approximate_keys(&self.db, &region, 0).unwrap_or_default()
-                });
+                let (approximate_size, approximate_keys) =
+                    if approximate_size.is_none() || approximate_keys.is_none() {
+                        crate::tiflash_ffi::get_tiflash_server_helper()
+                            .get_region_approximate_size_keys_of_tiflash(&region)
+                            .unwrap_or_default()
+                    } else {
+                        (approximate_size.unwrap(), approximate_keys.unwrap())
+                    };
                 let (
                     read_bytes_delta,
                     read_keys_delta,

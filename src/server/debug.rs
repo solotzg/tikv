@@ -27,7 +27,6 @@ use raft::{self, RawNode};
 use crate::config::ConfigController;
 use crate::storage::mvcc::{Lock, LockType, TimeStamp, Write, WriteRef, WriteType};
 use engine_rocks::properties::MvccProperties;
-use raftstore::coprocessor::get_region_approximate_middle;
 use raftstore::store::util as raftstore_util;
 use raftstore::store::PeerStorage;
 use raftstore::store::{write_initial_apply_state, write_initial_raft_state, write_peer_state};
@@ -737,13 +736,7 @@ impl<ER: RaftEngine> Debugger<ER> {
 
         let mut res = dump_mvcc_properties(self.engines.kv.as_inner(), &start, &end)?;
 
-        let middle_key = match box_try!(get_region_approximate_middle(&self.engines.kv, region)) {
-            Some(data_key) => {
-                let mut key = keys::origin_key(&data_key);
-                box_try!(bytes::decode_bytes(&mut key, false))
-            }
-            None => Vec::new(),
-        };
+        let middle_key = Vec::new();
 
         // Middle key of the range.
         res.push((

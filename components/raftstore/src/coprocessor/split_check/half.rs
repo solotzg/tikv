@@ -65,6 +65,10 @@ where
     fn policy(&self) -> CheckPolicy {
         self.policy
     }
+
+    fn get_type(&self) -> crate::coprocessor::SplitCheckerType {
+        crate::coprocessor::SplitCheckerType::Half
+    }
 }
 
 #[derive(Clone)]

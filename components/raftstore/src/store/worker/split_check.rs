@@ -12,7 +12,6 @@ use kvproto::pdpb::CheckPolicy;
 
 use crate::coprocessor::Config;
 use crate::coprocessor::CoprocessorHost;
-use crate::coprocessor::SplitCheckerHost;
 use crate::store::{Callback, CasualMessage, CasualRouter};
 use crate::Result;
 use configuration::{ConfigChange, Configuration};
@@ -188,8 +187,8 @@ where
     /// Checks a Region with split checkers to produce split keys and generates split admin command.
     fn check_split(&mut self, region: &Region, auto_split: bool, policy: CheckPolicy) {
         let region_id = region.get_id();
-        let start_key = keys::enc_start_key(region);
-        let end_key = keys::enc_end_key(region);
+        let start_key = region.get_start_key();
+        let end_key = region.get_end_key();
         debug!(
             "executing task";
             "region_id" => region_id,
@@ -210,33 +209,18 @@ where
             return;
         }
 
-        let split_keys = match host.policy() {
-            CheckPolicy::Scan => {
-                match self.scan_split_keys(&mut host, region, &start_key, &end_key) {
-                    Ok(keys) => keys,
-                    Err(e) => {
-                        error!(%e; "failed to scan split key"; "region_id" => region_id,);
-                        return;
-                    }
-                }
-            }
-            CheckPolicy::Approximate => match host.approximate_split_keys(region, &self.engine) {
-                Ok(keys) => keys
-                    .into_iter()
-                    .map(|k| keys::origin_key(&k).to_vec())
-                    .collect(),
+        let split_keys = match policy {
+            CheckPolicy::Scan | CheckPolicy::Approximate => match self.scan_split_keys(
+                region_id,
+                &start_key,
+                &end_key,
+                &self.cfg,
+                host.chose_split_method(),
+            ) {
+                Ok(keys) => keys,
                 Err(e) => {
-                    error!(%e;
-                        "failed to get approximate split key, try scan way";
-                        "region_id" => region_id,
-                    );
-                    match self.scan_split_keys(&mut host, region, &start_key, &end_key) {
-                        Ok(keys) => keys,
-                        Err(e) => {
-                            error!(%e; "failed to scan split key"; "region_id" => region_id,);
-                            return;
-                        }
-                    }
+                    error!(%e; "failed to scan split key"; "region_id" => region_id,);
+                    return;
                 }
             },
             CheckPolicy::Usekey => vec![], // Handled by pd worker directly.
@@ -261,52 +245,48 @@ where
         }
     }
 
-    /// Gets the split keys by scanning the range.
     fn scan_split_keys(
         &self,
-        host: &mut SplitCheckerHost<'_, E>,
-        region: &Region,
+        region_id: u64,
         start_key: &[u8],
         end_key: &[u8],
+        cfg: &Config,
+        method: crate::coprocessor::SplitCheckerType,
     ) -> Result<Vec<Vec<u8>>> {
         let timer = CHECK_SPILT_HISTOGRAM.start_coarse_timer();
-        MergedIterator::<<E as Iterable>::Iterator>::new(
-            &self.engine,
-            LARGE_CFS,
-            start_key,
-            end_key,
-            false,
-        )
-        .map(|mut iter| {
-            let mut size = 0;
-            let mut keys = 0;
-            while let Some(e) = iter.next() {
-                if host.on_kv(region, &e) {
-                    return;
-                }
-                size += e.entry_size() as u64;
-                keys += 1;
+        let mut checker_cfg = crate::tiflash_ffi::CheckerConfig {
+            max_size: cfg.region_max_size.0,
+            split_size: cfg.region_split_size.0,
+            batch_split_limit: if method == crate::coprocessor::SplitCheckerType::SizeAutoSplit {
+                cfg.batch_split_limit
+            } else {
+                0
+            },
+        };
+        let (size, keys, split_keys) = crate::tiflash_ffi::get_tiflash_server_helper()
+            .scan_split_keys(region_id, start_key, end_key, checker_cfg)?;
+        {
+            if size == 0 && keys == 0 {
+                // no need to update property
+            } else {
+                // if we scan the whole range, we can update approximate size and keys with accurate value.
+                info!(
+                    "update approximate size and keys with accurate value";
+                    "region_id" => region_id,
+                    "size" => size,
+                    "keys" => keys,
+                );
+                let _ = self
+                    .router
+                    .send(region_id, CasualMessage::RegionApproximateSize { size });
+                let _ = self
+                    .router
+                    .send(region_id, CasualMessage::RegionApproximateKeys { keys });
             }
-
-            // if we scan the whole range, we can update approximate size and keys with accurate value.
-            info!(
-                "update approximate size and keys with accurate value";
-                "region_id" => region.get_id(),
-                "size" => size,
-                "keys" => keys,
-            );
-            let _ = self.router.send(
-                region.get_id(),
-                CasualMessage::RegionApproximateSize { size },
-            );
-            let _ = self.router.send(
-                region.get_id(),
-                CasualMessage::RegionApproximateKeys { keys },
-            );
-        })?;
+        }
         timer.observe_duration();
 
-        Ok(host.split_keys())
+        Ok(split_keys)
     }
 
     fn change_cfg(&mut self, change: ConfigChange) {

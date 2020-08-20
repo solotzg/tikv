@@ -768,8 +768,6 @@ where
     apply_state: RaftApplyState,
     /// The term of the raft log at applied index.
     applied_index_term: u64,
-    /// The latest synced apply index.
-    last_sync_apply_index: u64,
 
     /// Info about cmd observer.
     observe_cmd: Option<ObserveCmd>,
@@ -790,7 +788,6 @@ where
             tag: format!("[region {}] {}", reg.region.get_id(), reg.id),
             region: reg.region,
             pending_remove: false,
-            last_sync_apply_index: reg.apply_state.get_applied_index(),
             apply_state: reg.apply_state,
             applied_index_term: reg.applied_index_term,
             term: reg.term,
@@ -889,12 +886,8 @@ where
         }
     }
 
-    fn update_metrics<W: WriteBatch<EK>>(&mut self, apply_ctx: &ApplyContext<EK, W>) {
-        self.metrics.written_bytes += apply_ctx.delta_bytes();
-        self.metrics.written_keys += apply_ctx.delta_keys();
-    }
-
     fn write_apply_state<W: WriteBatch<EK>>(&self, wb: &mut W) {
+        info!("persist apply state"; "region_id" => self.region_id(), "peer_id" => self.id(), "state" => ?self.apply_state);
         wb.put_msg_cf(
             CF_RAFT,
             &keys::apply_state_key(self.region.get_id()),
@@ -1177,7 +1170,6 @@ where
         };
 
         if need_write_apply_state && !self.pending_remove {
-            info!("persist apply state"; "region_id" => self.region_id(), "peer_id" => self.id(), "state" => ?self.apply_state);
             self.write_apply_state(ctx.kv_wb_mut());
         }
 
@@ -1378,27 +1370,47 @@ where
     ) -> Result<(RaftCmdResponse, ApplyResult<EK::Snapshot>, TiFlashApplyRes)> {
         const NONE_STR: &str = "";
         let requests = req.get_requests();
+        let mut responses = Vec::with_capacity(requests.len());
         let mut ssts = vec![];
         let mut cmds = WriteCmds::with_capacity(requests.len());
         for req in requests {
             let cmd_type = req.get_cmd_type();
+            let mut resp = Response::default();
+            resp.set_cmd_type(cmd_type);
+            responses.push(resp);
             match cmd_type {
                 CmdType::Put => {
                     let put = req.get_put();
-                    cmds.push(
-                        put.get_key(),
-                        put.get_value(),
-                        WriteCmdType::Put,
-                        put.get_cf(),
-                    );
+                    let cf = crate::tiflash_ffi::name_to_cf(put.get_cf());
+
+                    let (key, value) = (put.get_key(), put.get_value());
+                    util::check_key_in_region(key, &self.region)?;
+                    if cf != WriteCmdCf::Lock {
+                        self.metrics.size_diff_hint += key.len() as i64 + value.len() as i64;
+                        self.metrics.written_bytes += key.len() as u64 + value.len() as u64;
+                        self.metrics.written_keys += 1;
+                    }
+
+                    cmds.push(put.get_key(), put.get_value(), WriteCmdType::Put, cf.into());
                 }
                 CmdType::Delete => {
                     let del = req.get_delete();
+                    let cf = crate::tiflash_ffi::name_to_cf(del.get_cf());
+
+                    let key = del.get_key();
+                    util::check_key_in_region(key, &self.region)?;
+                    if cf != WriteCmdCf::Lock {
+                        self.metrics.size_diff_hint -= key.len() as i64;
+                        self.metrics.delete_keys_hint += 1;
+                        self.metrics.written_bytes += key.len() as u64;
+                        self.metrics.written_keys += 1;
+                    }
+
                     cmds.push(
                         del.get_key(),
                         NONE_STR.as_ref(),
                         WriteCmdType::Del,
-                        del.get_cf(),
+                        cf.into(),
                     );
                 }
                 CmdType::IngestSst => {
@@ -1409,10 +1421,17 @@ where
                     continue;
                 }
                 CmdType::Prewrite | CmdType::Invalid | CmdType::ReadIndex => {
-                    panic!("invalid cmd type, message maybe currupted");
+                    panic!("invalid cmd type, message maybe corrupted");
                 }
             }
         }
+
+        let mut resp = RaftCmdResponse::default();
+        if !req.get_header().get_uuid().is_empty() {
+            let uuid = req.get_header().get_uuid().to_vec();
+            resp.mut_header().set_uuid(uuid);
+        }
+        resp.set_responses(responses.into());
 
         return if !ssts.is_empty() {
             assert_eq!(cmds.len(), 0);
@@ -1428,11 +1447,7 @@ where
                         "pending_ssts" => ?self.pending_clean_ssts
                     );
 
-                    Ok((
-                        RaftCmdResponse::new(),
-                        ApplyResult::None,
-                        TiFlashApplyRes::None,
-                    ))
+                    Ok((resp, ApplyResult::None, TiFlashApplyRes::None))
                 }
                 TiFlashApplyRes::NotFound | TiFlashApplyRes::Persist => {
                     ssts.append(&mut self.pending_clean_ssts);
@@ -1446,7 +1461,7 @@ where
                     );
 
                     Ok((
-                        RaftCmdResponse::new(),
+                        resp,
                         ApplyResult::Res(ExecResult::IngestSst { ssts }),
                         TiFlashApplyRes::Persist,
                     ))
@@ -1463,7 +1478,7 @@ where
                     ),
                 )
             };
-            Ok((RaftCmdResponse::new(), ApplyResult::None, flash_res))
+            Ok((resp, ApplyResult::None, flash_res))
         };
     }
 }
@@ -2799,6 +2814,18 @@ impl GenSnapTask {
     where
         EK: KvEngine,
     {
+        let tiflash_snap = get_tiflash_server_helper().gen_tiflash_snapshot(RaftCmdHeader::new(
+            self.region_id,
+            last_applied_state.get_applied_index(),
+            last_applied_index_term,
+        ));
+
+        if tiflash_snap.is_null() {
+            return Err(Error::Other(
+                "something wrong happened when generate snapshot in tiflash".into(),
+            ));
+        }
+
         let snapshot = RegionTask::Gen {
             region_id: self.region_id,
             notifier: self.snap_notifier,
@@ -2807,6 +2834,7 @@ impl GenSnapTask {
             // This snapshot may be held for a long time, which may cause too many
             // open files in rocksdb.
             kv_snap,
+            tiflash_snap,
         };
         box_try!(region_sched.schedule(snapshot));
         Ok(())
@@ -3221,29 +3249,6 @@ where
         }
         let applied_index = self.delegate.apply_state.get_applied_index();
         assert!(snap_task.commit_index() <= applied_index);
-        let mut need_sync = apply_ctx
-            .apply_res
-            .iter()
-            .any(|res| res.region_id == self.delegate.region_id())
-            && self.delegate.last_sync_apply_index != applied_index;
-        (|| fail_point!("apply_on_handle_snapshot_sync", |_| { need_sync = true }))();
-        if need_sync {
-            if apply_ctx.timer.is_none() {
-                apply_ctx.timer = Some(Instant::now_coarse());
-            }
-            apply_ctx.prepare_write_batch();
-            self.delegate.write_apply_state(apply_ctx.kv_wb_mut());
-            fail_point!(
-                "apply_on_handle_snapshot_1_1",
-                self.delegate.id == 1 && self.delegate.region_id() == 1,
-                |_| unimplemented!()
-            );
-
-            apply_ctx.flush();
-            // For now, it's more like last_flush_apply_index.
-            // TODO: Update it only when `flush()` returns true.
-            self.delegate.last_sync_apply_index = applied_index;
-        }
 
         if let Err(e) = snap_task.generate_and_schedule_snapshot::<EK>(
             apply_ctx.engine.snapshot(),
@@ -3258,6 +3263,16 @@ where
                 "peer_id" => self.delegate.id()
             );
         }
+
+        {
+            if apply_ctx.timer.is_none() {
+                apply_ctx.timer = Some(Instant::now_coarse());
+            }
+            apply_ctx.prepare_write_batch();
+            self.delegate.write_apply_state(apply_ctx.kv_wb_mut());
+            apply_ctx.flush();
+        }
+
         self.delegate
             .pending_request_snapshot_count
             .fetch_sub(1, Ordering::SeqCst);
@@ -3370,7 +3385,7 @@ where
                 Some(Msg::Destroy(d)) => self.handle_destroy(apply_ctx, d),
                 Some(Msg::LogsUpToDate(cul)) => self.logs_up_to_date_for_merge(apply_ctx, cul),
                 Some(Msg::Noop) => {}
-                Some(Msg::Snapshot(_)) => unreachable!("should not request snapshot from tiflash"),
+                Some(Msg::Snapshot(snap_task)) => self.handle_snapshot(apply_ctx, snap_task),
                 Some(Msg::Change {
                     cmd,
                     region_epoch,
@@ -3532,12 +3547,7 @@ where
     }
 
     fn end(&mut self, fsms: &mut [Box<ApplyFsm<EK>>]) {
-        let is_synced = self.apply_ctx.flush();
-        if is_synced {
-            for fsm in fsms {
-                fsm.delegate.last_sync_apply_index = fsm.delegate.apply_state.get_applied_index();
-            }
-        }
+        self.apply_ctx.flush();
     }
 }
 

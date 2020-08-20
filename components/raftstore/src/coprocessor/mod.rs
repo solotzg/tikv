@@ -29,11 +29,7 @@ pub use self::region_info_accessor::{
     Callback as RegionInfoCallback, RegionCollector, RegionInfo, RegionInfoAccessor,
     RegionInfoProvider, SeekRegionCallback,
 };
-pub use self::split_check::{
-    get_region_approximate_keys, get_region_approximate_keys_cf, get_region_approximate_middle,
-    get_region_approximate_size, get_region_approximate_size_cf, HalfCheckObserver,
-    Host as SplitCheckerHost, KeysCheckObserver, SizeCheckObserver, TableCheckObserver,
-};
+pub use self::split_check::{HalfCheckObserver, Host as SplitCheckerHost, SizeCheckObserver};
 
 use crate::store::fsm::ObserveID;
 pub use crate::store::KeyEntry;
@@ -104,6 +100,13 @@ pub trait ApplySnapshotObserver: Coprocessor {
     fn apply_sst(&self, _: &mut ObserverContext<'_>, _: CfName, _path: &str) {}
 }
 
+#[derive(Eq, PartialEq)]
+pub enum SplitCheckerType {
+    None,
+    SizeAutoSplit,
+    Half,
+}
+
 /// SplitChecker is invoked during a split check scan, and decides to use
 /// which keys to split a region.
 pub trait SplitChecker<E> {
@@ -124,6 +127,10 @@ pub trait SplitChecker<E> {
 
     /// Get split policy.
     fn policy(&self) -> CheckPolicy;
+
+    fn get_type(&self) -> SplitCheckerType {
+        SplitCheckerType::None
+    }
 }
 
 pub trait SplitCheckObserver<E>: Coprocessor {

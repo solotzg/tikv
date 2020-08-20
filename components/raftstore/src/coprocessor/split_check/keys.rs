@@ -115,11 +115,11 @@ where
     ) {
         let region = ctx.region();
         let region_id = region.get_id();
-        let region_keys = match get_region_approximate_keys(
-            engine,
-            region,
-            host.cfg.region_max_keys * host.cfg.batch_split_limit,
-        ) {
+        let region_keys = match crate::tiflash_ffi::get_tiflash_server_helper()
+            .get_region_approximate_keys_of_tiflash(
+                region,
+                host.cfg.region_max_keys * host.cfg.batch_split_limit,
+            ) {
             Ok(keys) => keys,
             Err(e) => {
                 warn!(

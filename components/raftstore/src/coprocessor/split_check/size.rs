@@ -95,6 +95,10 @@ where
             self.batch_split_limit,
         )))
     }
+
+    fn get_type(&self) -> crate::coprocessor::SplitCheckerType {
+        crate::coprocessor::SplitCheckerType::SizeAutoSplit
+    }
 }
 
 #[derive(Clone)]
@@ -130,12 +134,10 @@ where
     ) {
         let region = ctx.region();
         let region_id = region.get_id();
-        let region_size = match get_region_approximate_size(
-            engine,
-            &region,
-            host.cfg.region_max_size.0 * host.cfg.batch_split_limit,
-        ) {
-            Ok(size) => size,
+        let (region_size, region_keys) = match crate::tiflash_ffi::get_tiflash_server_helper()
+            .get_region_approximate_size_keys_of_tiflash(region)
+        {
+            Ok(r) => r,
             Err(e) => {
                 warn!(
                     "failed to get approximate stat";
@@ -159,6 +161,15 @@ where
         if let Err(e) = self.router.lock().unwrap().send(region_id, res) {
             warn!(
                 "failed to send approximate region size";
+                "region_id" => region_id,
+                "err" => %e,
+                "error_code" => %e.error_code(),
+            );
+        }
+        let res = CasualMessage::RegionApproximateKeys { keys: region_keys };
+        if let Err(e) = self.router.lock().unwrap().send(region_id, res) {
+            warn!(
+                "failed to send approximate region keys";
                 "region_id" => region_id,
                 "err" => %e,
                 "error_code" => %e.error_code(),
