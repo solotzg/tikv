@@ -297,7 +297,7 @@ pub enum WriteCmdType {
     Del,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum WriteCmdCf {
     Lock,
     Write,
@@ -368,7 +368,7 @@ impl WriteCmds {
         WriteCmds::default()
     }
 
-    pub fn push(&mut self, key: &[u8], val: &[u8], cmd_type: WriteCmdType, cf: &str) {
+    pub fn push(&mut self, key: &[u8], val: &[u8], cmd_type: WriteCmdType, cf: u8) {
         self.keys.push(BaseBuffView {
             data: key.as_ptr(),
             len: key.len() as u64,
@@ -378,7 +378,7 @@ impl WriteCmds {
             len: val.len() as u64,
         });
         self.cmd_type.push(cmd_type.into());
-        self.cf.push(name_to_cf(cf).into());
+        self.cf.push(cf);
     }
 
     pub fn len(&self) -> usize {
@@ -481,6 +481,15 @@ impl BaseBuffView {
     }
 }
 
+impl From<&[u8]> for BaseBuffView {
+    fn from(s: &[u8]) -> Self {
+        Self {
+            data: s.as_ptr(),
+            len: s.len() as u64,
+        }
+    }
+}
+
 impl Default for BaseBuffView {
     fn default() -> Self {
         Self {
@@ -535,19 +544,93 @@ pub struct FsStats {
 
 #[repr(C)]
 pub struct CppStrWithView {
-    inner: *const u8,
+    inner: RawCppPtr,
     pub view: BaseBuffView,
 }
 
-impl Drop for CppStrWithView {
-    fn drop(&mut self) {
-        if self.inner == std::ptr::null() {
-            return;
-        }
-        get_tiflash_server_helper().gc_cpp_string(self.inner);
-        self.inner = std::ptr::null();
-        self.view = Default::default();
+impl CppStrWithView {
+    fn is_none(&self) -> bool {
+        self.inner.ptr == std::ptr::null()
     }
+}
+
+#[repr(C)]
+pub struct RawCppPtr {
+    ptr: *const u8,
+    tp: u32,
+}
+
+impl RawCppPtr {
+    pub fn raw_ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    pub fn get_type(&self) -> u32 {
+        self.tp
+    }
+
+    fn into_raw(mut self) -> *const u8 {
+        let ptr = self.ptr;
+        self.ptr = std::ptr::null();
+        ptr
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.ptr == std::ptr::null()
+    }
+}
+
+impl Drop for RawCppPtr {
+    fn drop(&mut self) {
+        if !self.is_null() {
+            get_tiflash_server_helper().gc_raw_cpp_ptr(RawCppPtr {
+                ptr: self.ptr,
+                tp: self.tp,
+            });
+            self.ptr = std::ptr::null();
+        }
+    }
+}
+
+unsafe impl Send for RawCppPtr {}
+
+#[repr(C)]
+pub struct SerializeTiFlashSnapshotRes {
+    pub ok: u8,
+    pub key_count: u64,
+    pub total_size: u64,
+}
+
+#[repr(C)]
+pub struct GetRegionApproximateSizeKeysRes {
+    pub ok: u8,
+    pub size: u64,
+    pub keys: u64,
+}
+
+#[repr(C)]
+pub struct SplitKeysWithView {
+    inner: RawCppPtr,
+    view: *const BaseBuffView,
+    len: u64,
+}
+
+impl Into<Vec<Vec<u8>>> for SplitKeysWithView {
+    fn into(self) -> Vec<Vec<u8>> {
+        let mut res = vec![];
+        for i in 0..self.len {
+            unsafe { res.push((*self.view.offset(i as isize)).to_slice().to_vec()) }
+        }
+        res
+    }
+}
+
+#[repr(C)]
+pub struct ScanSplitKeysRes {
+    pub ok: u8,
+    pub size: u64,
+    pub keys: u64,
+    pub split_keys: SplitKeysWithView,
 }
 
 #[repr(C)]
@@ -556,12 +639,10 @@ pub struct TiFlashServerHelper {
     version: u32,
     //
     inner: TiFlashServerPtr,
-    gen_cpp_string: extern "C" fn(BaseBuffView) -> *const u8,
+    gen_cpp_string: extern "C" fn(BaseBuffView) -> RawCppPtr,
     handle_write_raft_cmd: extern "C" fn(TiFlashServerPtr, WriteCmdsView, RaftCmdHeader) -> u32,
     handle_admin_raft_cmd:
         extern "C" fn(TiFlashServerPtr, BaseBuffView, BaseBuffView, RaftCmdHeader) -> u32,
-    handle_apply_snapshot:
-        extern "C" fn(TiFlashServerPtr, BaseBuffView, u64, SnapshotViewArray, u64, u64),
     handle_set_proxy: extern "C" fn(TiFlashServerPtr, *const TiFlashRaftProxyHelper),
     handle_destroy: extern "C" fn(TiFlashServerPtr, RegionId),
     handle_ingest_sst: extern "C" fn(TiFlashServerPtr, SnapshotViewArray, RaftCmdHeader) -> u32,
@@ -575,11 +656,30 @@ pub struct TiFlashServerHelper {
         SnapshotViewArray,
         u64,
         u64,
-    ) -> *const u8,
-    apply_pre_handled_snapshot: extern "C" fn(TiFlashServerPtr, *const u8),
-    gc_pre_handled_snapshot: extern "C" fn(TiFlashServerPtr, *const u8),
+    ) -> RawCppPtr,
+    apply_pre_handled_snapshot: extern "C" fn(TiFlashServerPtr, *const u8, u32),
     handle_get_table_sync_status: extern "C" fn(TiFlashServerPtr, u64) -> CppStrWithView,
-    gc_cpp_string: extern "C" fn(TiFlashServerPtr, *const u8),
+    gc_raw_cpp_ptr: extern "C" fn(TiFlashServerPtr, RawCppPtr),
+
+    is_tiflash_snapshot: extern "C" fn(TiFlashServerPtr, BaseBuffView) -> u8,
+    gen_tiflash_snapshot: extern "C" fn(TiFlashServerPtr, RaftCmdHeader) -> RawCppPtr,
+    serialize_tiflash_snapshot_into:
+        extern "C" fn(TiFlashServerPtr, *const u8, BaseBuffView) -> SerializeTiFlashSnapshotRes,
+    pre_handle_tiflash_snapshot:
+        extern "C" fn(TiFlashServerPtr, BaseBuffView, u64, u64, u64, BaseBuffView) -> RawCppPtr,
+    get_region_approximate_size_keys: extern "C" fn(
+        TiFlashServerPtr,
+        u64,
+        BaseBuffView,
+        BaseBuffView,
+    ) -> GetRegionApproximateSizeKeysRes,
+    scan_split_keys: extern "C" fn(
+        TiFlashServerPtr,
+        u64,
+        BaseBuffView,
+        BaseBuffView,
+        CheckerConfig,
+    ) -> ScanSplitKeysRes,
 }
 
 unsafe impl Send for TiFlashServerHelper {}
@@ -612,13 +712,100 @@ impl From<u8> for TiFlashStatus {
     }
 }
 
+#[repr(C)]
+pub struct CheckerConfig {
+    pub max_size: u64,
+    pub split_size: u64,
+    pub batch_split_limit: u64,
+}
+
 impl TiFlashServerHelper {
-    pub fn handle_get_table_sync_status(&self, table_id: u64) -> CppStrWithView {
-        (self.handle_get_table_sync_status)(self.inner, table_id)
+    pub fn scan_split_keys(
+        &self,
+        region_id: u64,
+        start_key: &[u8],
+        end_key: &[u8],
+        config: CheckerConfig,
+    ) -> crate::errors::Result<(u64, u64, Vec<Vec<u8>>)> {
+        let res = (self.scan_split_keys)(
+            self.inner,
+            region_id,
+            start_key.into(),
+            end_key.into(),
+            config,
+        );
+        return if res.ok == 0 {
+            Err(crate::errors::Error::Other(box_err!(
+                "fail to scan split keys about region {} from tiflash",
+                region_id
+            )))
+        } else {
+            Ok((res.size, res.keys, res.split_keys.into()))
+        };
     }
 
-    pub fn gc_cpp_string(&self, s: *const u8) {
-        (self.gc_cpp_string)(self.inner, s)
+    pub fn get_region_approximate_size_keys_of_tiflash(
+        &self,
+        region: &metapb::Region,
+    ) -> crate::errors::Result<(u64, u64)> {
+        let start_key = region.get_start_key();
+        let end_key = region.get_end_key();
+        let res = (self.get_region_approximate_size_keys)(
+            self.inner,
+            region.get_id(),
+            start_key.into(),
+            end_key.into(),
+        );
+        return if res.ok == 0 {
+            Err(crate::errors::Error::Other(box_err!(
+                "fail to get region approximate size and keys about region {} from tiflash",
+                region.get_id()
+            )))
+        } else {
+            Ok((res.size, res.keys))
+        };
+    }
+
+    pub fn is_tiflash_snapshot(&self, path: &[u8]) -> bool {
+        (self.is_tiflash_snapshot)(self.inner, path.into()) != 0
+    }
+
+    pub fn gen_tiflash_snapshot(&self, header: RaftCmdHeader) -> RawCppPtr {
+        (self.gen_tiflash_snapshot)(self.inner, header)
+    }
+
+    pub fn serialize_tiflash_snapshot_into(
+        &self,
+        p: *const u8,
+        path: &[u8],
+    ) -> SerializeTiFlashSnapshotRes {
+        (self.serialize_tiflash_snapshot_into)(self.inner, p, path.into())
+    }
+
+    pub fn pre_handle_tiflash_snapshot(
+        &self,
+        region: &metapb::Region,
+        peer_id: u64,
+        index: u64,
+        term: u64,
+        path: BaseBuffView,
+    ) -> RawCppPtr {
+        (self.pre_handle_tiflash_snapshot)(
+            self.inner,
+            ProtoMsgBaseBuff::new(region).buff_view,
+            peer_id,
+            index,
+            term,
+            path,
+        )
+    }
+
+    fn gc_raw_cpp_ptr(&self, p: RawCppPtr) {
+        (self.gc_raw_cpp_ptr)(self.inner, p);
+    }
+
+    pub fn handle_get_table_sync_status(&self, table_id: u64) -> CppStrWithView {
+        (self.handle_get_table_sync_status)(self.inner, table_id)
     }
 
     pub fn handle_compute_fs_stats(&self) -> FsStats {
@@ -631,7 +818,7 @@ impl TiFlashServerHelper {
         header: RaftCmdHeader,
     ) -> TiFlashApplyRes {
         let res = (self.handle_write_raft_cmd)(self.inner, cmds.gen_view(), header);
-        TiFlashApplyRes::from(res)
+        res.into()
     }
 
     pub fn handle_get_tiflash_status(&mut self) -> TiFlashStatus {
@@ -645,7 +832,7 @@ impl TiFlashServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 11;
+        const VERSION: u32 = 12;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
@@ -674,25 +861,7 @@ impl TiFlashServerHelper {
             ProtoMsgBaseBuff::new(resp).buff_view,
             header,
         );
-        TiFlashApplyRes::from(res)
-    }
-
-    pub fn handle_apply_snapshot(
-        &self,
-        region: &metapb::Region,
-        peer_id: u64,
-        snaps: &mut SnapshotHelper,
-        index: u64,
-        term: u64,
-    ) {
-        (self.handle_apply_snapshot)(
-            self.inner,
-            ProtoMsgBaseBuff::new(region).buff_view,
-            peer_id,
-            snaps.gen_snapshot_view(),
-            index,
-            term,
-        );
+        res.into()
     }
 
     pub fn pre_handle_snapshot(
@@ -702,7 +871,7 @@ impl TiFlashServerHelper {
         snaps: &mut SnapshotHelper,
         index: u64,
         term: u64,
-    ) -> *const u8 {
+    ) -> RawCppPtr {
         (self.pre_handle_snapshot)(
             self.inner,
             ProtoMsgBaseBuff::new(region).buff_view,
@@ -713,12 +882,8 @@ impl TiFlashServerHelper {
         )
     }
 
-    pub fn apply_pre_handled_snapshot(&self, s: *const u8) {
-        (self.apply_pre_handled_snapshot)(self.inner, s)
-    }
-
-    pub fn gc_pre_handled_snapshot(&self, s: *const u8) {
-        (self.gc_pre_handled_snapshot)(self.inner, s)
+    pub fn apply_pre_handled_snapshot(&self, s: *const u8, tp: u32) {
+        (self.apply_pre_handled_snapshot)(self.inner, s, tp)
     }
 
     pub fn handle_ingest_sst(
@@ -727,7 +892,7 @@ impl TiFlashServerHelper {
         header: RaftCmdHeader,
     ) -> TiFlashApplyRes {
         let res = (self.handle_ingest_sst)(self.inner, snaps.gen_snapshot_view(), header);
-        TiFlashApplyRes::from(res)
+        res.into()
     }
 
     pub fn handle_destroy(&self, region_id: RegionId) {
@@ -738,10 +903,11 @@ impl TiFlashServerHelper {
         (self.handle_check_terminated)(self.inner) != 0
     }
 
-    pub(crate) fn gen_cpp_string(&self, buff: &[u8]) -> *const u8 {
+    fn gen_cpp_string(&self, buff: &[u8]) -> *const u8 {
         (self.gen_cpp_string)(BaseBuffView {
             data: buff.as_ptr(),
             len: buff.len() as u64,
         })
+        .into_raw()
     }
 }

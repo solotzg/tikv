@@ -1,9 +1,7 @@
 // Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
 mod half;
-mod keys;
 mod size;
-mod table;
 
 use kvproto::metapb::Region;
 use kvproto::pdpb::CheckPolicy;
@@ -12,14 +10,8 @@ use super::config::Config;
 use super::error::Result;
 use super::{KeyEntry, ObserverContext, SplitChecker};
 
-pub use self::half::{get_region_approximate_middle, HalfCheckObserver};
-pub use self::keys::{
-    get_region_approximate_keys, get_region_approximate_keys_cf, KeysCheckObserver,
-};
-pub use self::size::{
-    get_region_approximate_size, get_region_approximate_size_cf, SizeCheckObserver,
-};
-pub use self::table::TableCheckObserver;
+pub use self::half::HalfCheckObserver;
+pub use self::size::SizeCheckObserver;
 
 pub struct Host<'a, E> {
     checkers: Vec<Box<dyn SplitChecker<E>>>,
@@ -91,5 +83,14 @@ impl<'a, E> Host<'a, E> {
     #[inline]
     pub fn add_checker(&mut self, checker: Box<dyn SplitChecker<E>>) {
         self.checkers.push(checker);
+    }
+
+    pub fn chose_split_method(&self) -> crate::coprocessor::SplitCheckerType {
+        for e in &self.checkers {
+            if e.get_type() == crate::coprocessor::SplitCheckerType::SizeAutoSplit {
+                return crate::coprocessor::SplitCheckerType::SizeAutoSplit;
+            }
+        }
+        crate::coprocessor::SplitCheckerType::Half
     }
 }

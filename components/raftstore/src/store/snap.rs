@@ -192,6 +192,7 @@ pub trait Snapshot<E: KvEngine>: GenericSnapshot {
         region: &Region,
         snap_data: &mut RaftSnapshotData,
         stat: &mut SnapshotStatistics,
+        tiflash_snap: tiflash_ffi::RawCppPtr,
     ) -> RaftStoreResult<()>;
     fn apply(&mut self, options: ApplyOptions<E>) -> Result<()>;
 }
@@ -353,14 +354,7 @@ pub struct PreHandledSnapshot {
     pub empty: bool,
     pub index: u64,
     pub term: u64,
-    pub inner: *const u8,
-}
-
-impl Drop for PreHandledSnapshot {
-    fn drop(&mut self) {
-        tiflash_ffi::get_tiflash_server_helper().gc_pre_handled_snapshot(self.inner);
-        self.inner = std::ptr::null();
-    }
+    pub inner: tiflash_ffi::RawCppPtr,
 }
 
 unsafe impl Send for PreHandledSnapshot {}
@@ -435,24 +429,6 @@ impl Snap {
         snapshot_helper
     }
 
-    pub fn apply_to_tiflash(
-        &self,
-        region: &kvproto::metapb::Region,
-        peer_id: u64,
-        idx: u64,
-        term: u64,
-    ) {
-        let mut snapshot_helper = self.gen_snapshot_helper(region);
-
-        tiflash_ffi::get_tiflash_server_helper().handle_apply_snapshot(
-            &region,
-            peer_id,
-            &mut snapshot_helper,
-            idx,
-            term,
-        );
-    }
-
     pub fn pre_handle_snapshot(
         &self,
         region: &kvproto::metapb::Region,
@@ -460,21 +436,54 @@ impl Snap {
         index: u64,
         term: u64,
     ) -> PreHandledSnapshot {
-        let mut snapshot_helper = self.gen_snapshot_helper(region);
-        let res = tiflash_ffi::get_tiflash_server_helper().pre_handle_snapshot(
-            &region,
-            peer_id,
-            &mut snapshot_helper,
-            index,
-            term,
-        );
+        let tiflash_snapshot = (|| {
+            let mut res = None;
+            for cf in &self.cf_files {
+                if cf.size == 0 {
+                    continue;
+                }
+                if tiflash_ffi::get_tiflash_server_helper()
+                    .is_tiflash_snapshot(cf.path.to_str().unwrap().as_bytes())
+                {
+                    assert_eq!(cf.cf, CF_WRITE);
+                    assert!(res.is_none());
+                    res = Some(cf);
+                }
+            }
+            return res;
+        })();
 
-        PreHandledSnapshot {
-            empty: snapshot_helper.empty(),
-            index,
-            term,
-            inner: res,
-        }
+        return if let Some(cf) = tiflash_snapshot {
+            let res = tiflash_ffi::get_tiflash_server_helper().pre_handle_tiflash_snapshot(
+                &region,
+                peer_id,
+                index,
+                term,
+                cf.path.to_str().unwrap().as_bytes().into(),
+            );
+            PreHandledSnapshot {
+                empty: cf.size == 0,
+                index,
+                term,
+                inner: res,
+            }
+        } else {
+            let mut snapshot_helper = self.gen_snapshot_helper(region);
+            let res = tiflash_ffi::get_tiflash_server_helper().pre_handle_snapshot(
+                &region,
+                peer_id,
+                &mut snapshot_helper,
+                index,
+                term,
+            );
+
+            PreHandledSnapshot {
+                empty: snapshot_helper.empty(),
+                index,
+                term,
+                inner: res,
+            }
+        };
     }
 }
 
@@ -731,6 +740,22 @@ impl Snap {
         )
     }
 
+    fn validate_for_tiflash(&self) -> RaftStoreResult<()> {
+        for cf_file in &self.cf_files {
+            if cf_file.size == 0 {
+                continue;
+            }
+            check_file_size_and_checksum(
+                &cf_file.path,
+                cf_file.size,
+                cf_file.checksum,
+                self.mgr.encryption_key_manager.as_ref(),
+            )?;
+        }
+        Ok(())
+    }
+
+    // useless for tiflash
     fn validate(&self, engine: &impl KvEngine, for_send: bool) -> RaftStoreResult<()> {
         for cf_file in &self.cf_files {
             if cf_file.size == 0 {
@@ -803,6 +828,88 @@ impl Snap {
         }
     }
 
+    fn do_build_tiflash_snap(
+        &mut self,
+        region: &Region,
+        tiflash_snap: tiflash_ffi::RawCppPtr,
+        stat: &mut SnapshotStatistics,
+    ) -> RaftStoreResult<()> {
+        if self.exists() {
+            match self.validate_for_tiflash() {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    error!(
+                        "snapshot is corrupted, will rebuild";
+                        "region_id" => region.get_id(),
+                        "snapshot" => %self.path(),
+                        "err" => ?e,
+                    );
+                    if !retry_delete_snapshot(&self.mgr, &self.key, self) {
+                        error!(
+                            "failed to delete corrupted snapshot because it's \
+                             already registered elsewhere";
+                            "region_id" => region.get_id(),
+                            "snapshot" => %self.path(),
+                        );
+                        return Err(e);
+                    }
+                    self.init_for_building()?;
+                }
+            }
+        }
+
+        assert!(!region.get_peers().is_empty());
+        let (cf_enum, cf) = &(CfNames::write, CF_WRITE);
+        {
+            self.switch_to_cf_file(cf)?;
+            let cf_file = &mut self.cf_files[self.cf_index];
+            let path = cf_file.tmp_path.to_str().unwrap().as_bytes();
+            let cf_stat = {
+                tiflash_ffi::get_tiflash_server_helper()
+                    .serialize_tiflash_snapshot_into(tiflash_snap.raw_ptr(), path)
+            };
+
+            if cf_stat.ok == 0 {
+                return Err(crate::errors::Error::Other(
+                    "something wrong happened when serialize snapshot into file in tiflash".into(),
+                ));
+            }
+
+            cf_file.kv_count = cf_stat.key_count;
+            if cf_file.kv_count > 0 {
+                // Use `kv_count` instead of file size to check empty files because encrypted sst files
+                // contain some metadata so their sizes will never be 0.
+                self.mgr.rename_tmp_cf_file_for_send(cf_file)?;
+                self.mgr.snap_size.fetch_add(cf_file.size, Ordering::SeqCst);
+            } else {
+                delete_file_if_exist(&cf_file.tmp_path).unwrap();
+            }
+
+            SNAPSHOT_CF_KV_COUNT
+                .get(*cf_enum)
+                .observe(cf_stat.key_count as f64);
+            SNAPSHOT_CF_SIZE
+                .get(*cf_enum)
+                .observe(cf_stat.total_size as f64);
+            info!(
+                "scan snapshot of one cf";
+                "region_id" => region.get_id(),
+                "snapshot" => self.path(),
+                "cf" => cf,
+                "key_count" => cf_stat.key_count,
+                "size" => cf_stat.total_size,
+            );
+        }
+
+        stat.kv_count = self.cf_files.iter().map(|cf| cf.kv_count as usize).sum();
+        // save snapshot meta to meta file
+        let snapshot_meta = gen_snapshot_meta(&self.cf_files[..])?;
+        self.meta_file.meta = snapshot_meta;
+        self.save_meta_file()?;
+        Ok(())
+    }
+
+    // useless for tiflash
     fn do_build<E: KvEngine>(
         &mut self,
         engine: &E,
@@ -914,9 +1021,10 @@ where
         region: &Region,
         snap_data: &mut RaftSnapshotData,
         stat: &mut SnapshotStatistics,
+        tiflash_snap: tiflash_ffi::RawCppPtr,
     ) -> RaftStoreResult<()> {
         let t = Instant::now();
-        self.do_build::<E>(engine, kv_snap, region, stat)?;
+        self.do_build_tiflash_snap(region, tiflash_snap, stat)?;
 
         let total_size = self.total_size()?;
         stat.size = total_size;
@@ -938,6 +1046,7 @@ where
         Ok(())
     }
 
+    // useless for tiflash
     fn apply(&mut self, options: ApplyOptions<E>) -> Result<()> {
         box_try!(self.validate(&options.db, false));
 

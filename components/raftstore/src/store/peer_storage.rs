@@ -22,7 +22,7 @@ use raft::{self, Error as RaftError, RaftState, Ready, Storage, StorageError};
 use crate::store::fsm::GenSnapTask;
 use crate::store::util;
 use crate::store::ProposalContext;
-use crate::{Error, Result};
+use crate::{tiflash_ffi, Error, Result};
 use into_other::into_other;
 use tikv_util::worker::Scheduler;
 
@@ -1575,6 +1575,7 @@ pub fn do_snapshot<E>(
     region_id: u64,
     last_applied_index_term: u64,
     last_applied_state: RaftApplyState,
+    tiflash_snap: tiflash_ffi::RawCppPtr,
 ) -> raft::Result<Snapshot>
 where
     E: KvEngine,
@@ -1642,6 +1643,7 @@ where
         state.get_region(),
         &mut snap_data,
         &mut stat,
+        tiflash_snap,
     )?;
     let v = snap_data.write_to_bytes()?;
     snapshot.set_data(v);
