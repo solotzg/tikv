@@ -277,12 +277,10 @@ impl<S: CasualRouter<RocksEngine>> Runner<S> {
                     "size" => size,
                     "keys" => keys,
                 );
-                let _ = self
-                    .router
-                    .send(region_id, CasualMessage::RegionApproximateSize { size });
-                let _ = self
-                    .router
-                    .send(region_id, CasualMessage::RegionApproximateKeys { keys });
+                let _ = self.router.send(
+                    region_id,
+                    CasualMessage::RegionApproximateSizeKeys { size, keys },
+                );
             }
         }
         timer.observe_duration();

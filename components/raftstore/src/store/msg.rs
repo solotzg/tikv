@@ -247,14 +247,11 @@ pub enum CasualMessage<EK: KvEngine> {
     },
 
     /// Approximate size of target region.
-    RegionApproximateSize {
+    RegionApproximateSizeKeys {
         size: u64,
-    },
-
-    /// Approximate key count of target region.
-    RegionApproximateKeys {
         keys: u64,
     },
+
     CompactionDeclinedBytes {
         bytes: u64,
     },
@@ -292,12 +289,11 @@ impl<EK: KvEngine> fmt::Debug for CasualMessage<EK> {
                 "Split region with {}",
                 KeysInfoFormatter(split_keys.iter())
             ),
-            CasualMessage::RegionApproximateSize { size } => {
-                write!(fmt, "Region's approximate size [size: {:?}]", size)
-            }
-            CasualMessage::RegionApproximateKeys { keys } => {
-                write!(fmt, "Region's approximate keys [keys: {:?}]", keys)
-            }
+            CasualMessage::RegionApproximateSizeKeys { size, keys } => write!(
+                fmt,
+                "Region's approximate size [size: {:?}] keys [keys: {:?}]",
+                size, keys
+            ),
             CasualMessage::CompactionDeclinedBytes { bytes } => {
                 write!(fmt, "compaction declined bytes {}", bytes)
             }
