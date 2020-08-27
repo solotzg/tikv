@@ -522,11 +522,8 @@ where
             } => {
                 self.on_hash_computed(index, context, hash);
             }
-            CasualMessage::RegionApproximateSize { size } => {
-                self.on_approximate_region_size(size);
-            }
-            CasualMessage::RegionApproximateKeys { keys } => {
-                self.on_approximate_region_keys(keys);
+            CasualMessage::RegionApproximateSizeKeys { size, keys } => {
+                self.on_approximate_region_size(size, keys);
             }
             CasualMessage::CompactionDeclinedBytes { bytes } => {
                 self.on_compaction_declined_bytes(bytes);
@@ -3440,13 +3437,8 @@ where
         Ok(())
     }
 
-    fn on_approximate_region_size(&mut self, size: u64) {
+    fn on_approximate_region_size(&mut self, size: u64, keys: u64) {
         self.fsm.peer.approximate_size = Some(size);
-        self.register_split_region_check_tick();
-        self.register_pd_heartbeat_tick();
-    }
-
-    fn on_approximate_region_keys(&mut self, keys: u64) {
         self.fsm.peer.approximate_keys = Some(keys);
         self.register_split_region_check_tick();
         self.register_pd_heartbeat_tick();

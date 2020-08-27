@@ -157,19 +157,13 @@ where
         };
 
         // send it to raftstore to update region approximate size
-        let res = CasualMessage::RegionApproximateSize { size: region_size };
+        let res = CasualMessage::RegionApproximateSizeKeys {
+            size: region_size,
+            keys: region_keys,
+        };
         if let Err(e) = self.router.lock().unwrap().send(region_id, res) {
             warn!(
-                "failed to send approximate region size";
-                "region_id" => region_id,
-                "err" => %e,
-                "error_code" => %e.error_code(),
-            );
-        }
-        let res = CasualMessage::RegionApproximateKeys { keys: region_keys };
-        if let Err(e) = self.router.lock().unwrap().send(region_id, res) {
-            warn!(
-                "failed to send approximate region keys";
+                "failed to send approximate region size and keys";
                 "region_id" => region_id,
                 "err" => %e,
                 "error_code" => %e.error_code(),
@@ -296,8 +290,7 @@ pub mod tests {
     ) {
         loop {
             match rx.try_recv() {
-                Ok((region_id, CasualMessage::RegionApproximateSize { .. }))
-                | Ok((region_id, CasualMessage::RegionApproximateKeys { .. })) => {
+                Ok((region_id, CasualMessage::RegionApproximateSizeKeys { .. })) => {
                     assert_eq!(region_id, exp_region.get_id());
                 }
                 Ok((
@@ -384,7 +377,7 @@ pub mod tests {
         ));
         // size has not reached the max_size 100 yet.
         match rx.try_recv() {
-            Ok((region_id, CasualMessage::RegionApproximateSize { .. })) => {
+            Ok((region_id, CasualMessage::RegionApproximateSizeKeys { .. })) => {
                 assert_eq!(region_id, region.get_id());
             }
             others => panic!("expect recv empty, but got {:?}", others),
