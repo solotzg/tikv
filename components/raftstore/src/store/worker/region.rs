@@ -398,6 +398,10 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
             assert_eq!(term, snap.term);
             tiflash_ffi::get_tiflash_server_helper().apply_pre_handled_snapshot(snap.inner);
         } else {
+            info!(
+                "apply data to tiflash";
+                "region_id" => region_id,
+            );
             let s = box_try!(self.mgr.get_concrete_snapshot_for_applying(&snap_key));
             if !s.exists() {
                 return Err(box_err!("missing snapshot file {}", s.path()));
@@ -597,6 +601,7 @@ pub struct Runner<R> {
     // we may delay some apply tasks if level 0 files to write stall threshold,
     // pending_applies records all delayed apply task, and will check again later
     pending_applies: VecDeque<TiFlashApplyTask>,
+    opt_pre_handle_snap: bool,
 }
 
 impl<R: CasualRouter<RocksEngine>> Runner<R> {
@@ -609,9 +614,15 @@ impl<R: CasualRouter<RocksEngine>> Runner<R> {
         coprocessor_host: CoprocessorHost,
         router: R,
     ) -> Runner<R> {
+        let (pool_size, opt_pre_handle_snap) = if snap_handle_pool_size == 0 {
+            (GENERATE_POOL_SIZE, false)
+        } else {
+            (snap_handle_pool_size, true)
+        };
+        info!("create region runner"; "pool_size" => pool_size, "opt_pre_handle_snap" => opt_pre_handle_snap);
         Runner {
             pool: Builder::new(thd_name!("snap-handler"))
-                .max_thread_count(snap_handle_pool_size)
+                .max_thread_count(pool_size)
                 .build_future_pool(),
 
             ctx: SnapContext {
@@ -624,6 +635,7 @@ impl<R: CasualRouter<RocksEngine>> Runner<R> {
                 router,
             },
             pending_applies: VecDeque::new(),
+            opt_pre_handle_snap,
         }
     }
 
@@ -700,11 +712,16 @@ where
                 let (sender, receiver) = mpsc::channel();
                 let ctx = self.ctx.clone();
                 let abort = status.clone();
-                self.pool.spawn(async move {
-                    let _ = ctx
-                        .pre_handle_snapshot(region_id, peer_id, abort)
-                        .map_or_else(|_| sender.send(None), |s| sender.send(Some(s)));
-                });
+                if self.opt_pre_handle_snap {
+                    self.pool.spawn(async move {
+                        let _ = ctx
+                            .pre_handle_snapshot(region_id, peer_id, abort)
+                            .map_or_else(|_| sender.send(None), |s| sender.send(Some(s)));
+                    });
+                } else {
+                    sender.send(None).unwrap();
+                }
+
                 self.pending_applies.push_back(TiFlashApplyTask {
                     region_id,
                     peer_id,
