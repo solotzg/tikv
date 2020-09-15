@@ -184,24 +184,14 @@ protobuf = { git = "https://github.com/pingcap/rust-protobuf", rev = "b67d432c1b
 protobuf-codegen = { git = "https://github.com/pingcap/rust-protobuf", rev = "b67d432c1b74350b38a5d96ddf885ac6c3ff46f5" }
 
 fail = { git = "https://github.com/tikv/fail-rs.git", rev = "2cf1175a1a5cc2c70bd20ebd45313afd69b558fc" }
-prometheus = { git = "https://github.com/tikv/rust-prometheus.git", rev = "fd122caa03de8e7e5e4fae9372583aebf19e39f6" }
+prometheus = { git = "https://github.com/solotzg/rust-prometheus.git", rev = "12f0985fbf9b4ce35b37a1e0133b7ba49a906c89" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procinfo = { git = "https://github.com/tikv/procinfo-rs", rev = "5125fc1a69496b73b26b3c08b6e8afc3c665a56e" }
 
 [workspace]
 members = [
-#  "fuzz",
-#  "fuzz/fuzzer-afl",
-#  "fuzz/fuzzer-libfuzzer",
-#  "fuzz/fuzzer-honggfuzz",
-#  "tests",
   "tiflash-proxy",
-#  "components/test_raftstore",
-#  "components/test_storage",
-#  "components/test_coprocessor",
-#  "components/test_sst_importer",
-#  "components/test_util",
   "components/tikv_alloc",
   "components/match_template",
   "components/codec",
@@ -220,13 +210,10 @@ members = [
   "components/tidb_query_vec_executors",
   "components/pd_client",
   "components/external_storage",
-#  "components/backup",
   "components/keys",
   "components/sst_importer",
   "components/txn_types",
-#  "components/resolved_ts",
   "components/batch-system",
-#  "components/cdc",
   "components/raftstore",
   "components/into_other",
   "components/encryption",
