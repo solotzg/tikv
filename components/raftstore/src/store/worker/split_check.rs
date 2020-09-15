@@ -255,7 +255,7 @@ impl<S: CasualRouter<RocksEngine>> Runner<S> {
     ) -> Result<Vec<Vec<u8>>> {
         let timer = CHECK_SPILT_HISTOGRAM.start_coarse_timer();
 
-        let mut checker_cfg = crate::tiflash_ffi::CheckerConfig {
+        let checker_cfg = crate::tiflash_ffi::CheckerConfig {
             max_size: cfg.region_max_size.0,
             split_size: cfg.region_split_size.0,
             batch_split_limit: if method == crate::coprocessor::SplitCheckerType::SizeAutoSplit {
