@@ -635,7 +635,7 @@ impl<R: CasualRouter<RocksEngine>> Runner<R> {
         };
         info!("create region runner"; "pool_size" => pool_size, "opt_pre_handle_snap" => opt_pre_handle_snap);
         Runner {
-            pool: Builder::new(thd_name!("snap-handler"))
+            pool: Builder::new(thd_name!("snap-handle-pool"))
                 .max_thread_count(pool_size)
                 .build_future_pool(),
 
