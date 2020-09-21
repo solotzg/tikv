@@ -107,13 +107,6 @@ pub enum SplitCheckerType {
     Half,
 }
 
-#[derive(Eq, PartialEq)]
-pub enum SplitCheckerType {
-    None,
-    SizeAutoSplit,
-    Half,
-}
-
 /// SplitChecker is invoked during a split check scan, and decides to use
 /// which keys to split a region.
 pub trait SplitChecker<E> {

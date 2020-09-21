@@ -17,6 +17,7 @@ use kvproto::import_sstpb::*;
 
 use kvproto::raft_cmdpb::*;
 
+use crate::server::CONFIG_ROCKSDB_GAUGE;
 use engine_rocks::RocksEngine;
 use engine_traits::{SstExt, SstWriterBuilder};
 use raftstore::router::RaftStoreRouter;
@@ -90,7 +91,16 @@ impl<Router: RaftStoreRouter<RocksEngine>> ImportSst for ImportSSTService<Router
         let label = "switch_mode";
         let timer = Instant::now_coarse();
 
-        let res = { Ok(()) };
+        let res = {
+            fn mf(cf: &str, name: &str, v: f64) {
+                CONFIG_ROCKSDB_GAUGE.with_label_values(&[cf, name]).set(v);
+            }
+
+            match req.get_mode() {
+                SwitchMode::Normal => self.switcher.enter_normal_mode(mf),
+                SwitchMode::Import => self.switcher.enter_import_mode(mf),
+            }
+        };
         match res {
             Ok(_) => info!("switch mode"; "mode" => ?req.get_mode()),
             Err(ref e) => error!(%e; "switch mode failed"; "mode" => ?req.get_mode(),),
