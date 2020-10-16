@@ -310,7 +310,7 @@ pub trait Notifier<EK: KvEngine>: Send {
     fn clone_box(&self) -> Box<dyn Notifier<EK>>;
 }
 
-struct ApplyContext<EK, W>
+pub struct ApplyContext<EK, W>
 where
     EK: KvEngine,
     W: WriteBatch<EK>,
@@ -2994,15 +2994,16 @@ impl GenSnapTask {
         self.commit_index
     }
 
-    pub fn generate_and_schedule_snapshot<EK>(
+    pub fn generate_and_schedule_snapshot<EK, W>(
         self,
-        kv_snap: EK::Snapshot,
+        apply_ctx: &mut ApplyContext<EK, W>,
         last_applied_index_term: u64,
         last_applied_state: RaftApplyState,
-        region_sched: &Scheduler<RegionTask<EK::Snapshot>>,
+        delegate: &ApplyDelegate<EK>,
     ) -> Result<()>
     where
         EK: KvEngine,
+        W: WriteBatch<EK>,
     {
         let tiflash_snap = get_tiflash_server_helper().gen_tiflash_snapshot(RaftCmdHeader::new(
             self.region_id,
@@ -3016,6 +3017,17 @@ impl GenSnapTask {
             ));
         }
 
+        {
+            if apply_ctx.timer.is_none() {
+                apply_ctx.timer = Some(Instant::now_coarse());
+            }
+            apply_ctx.prepare_write_batch();
+            delegate.write_apply_state(apply_ctx.kv_wb_mut());
+            apply_ctx.flush();
+        }
+
+        let kv_snap = apply_ctx.engine.snapshot();
+
         let snapshot = RegionTask::Gen {
             region_id: self.region_id,
             notifier: self.snap_notifier,
@@ -3026,7 +3038,7 @@ impl GenSnapTask {
             kv_snap,
             tiflash_snap,
         };
-        box_try!(region_sched.schedule(snapshot));
+        box_try!(apply_ctx.region_scheduler.schedule(snapshot));
         Ok(())
     }
 }
@@ -3438,39 +3450,31 @@ where
             return;
         }
         let applied_index = self.delegate.apply_state.get_applied_index();
-        assert!(snap_task.commit_index() <= applied_index);
-
-        if let Err(e) = snap_task.generate_and_schedule_snapshot::<EK>(
-            apply_ctx.engine.snapshot(),
-            self.delegate.applied_index_term,
-            self.delegate.apply_state.clone(),
-            &apply_ctx.region_scheduler,
-        ) {
+        if snap_task.commit_index() > applied_index {
             error!(
                 "schedule snapshot failed";
-                "error" => ?e,
-                "region_id" => self.delegate.region_id(),
-                "peer_id" => self.delegate.id()
+                "snap_task.commit_index" => snap_task.commit_index(),
+                "applied_index" => applied_index,
             );
-        }
-
-        {
-            if apply_ctx.timer.is_none() {
-                apply_ctx.timer = Some(Instant::now_coarse());
+        } else {
+            if let Err(e) = snap_task.generate_and_schedule_snapshot::<EK, W>(
+                apply_ctx,
+                self.delegate.applied_index_term,
+                self.delegate.apply_state.clone(),
+                &self.delegate,
+            ) {
+                error!(
+                    "schedule snapshot failed";
+                    "error" => ?e,
+                    "region_id" => self.delegate.region_id(),
+                    "peer_id" => self.delegate.id()
+                );
             }
-            apply_ctx.prepare_write_batch();
-            self.delegate.write_apply_state(apply_ctx.kv_wb_mut());
-            apply_ctx.flush();
         }
 
         self.delegate
             .pending_request_snapshot_count
             .fetch_sub(1, Ordering::SeqCst);
-        fail_point!(
-            "apply_on_handle_snapshot_finish_1_1",
-            self.delegate.id == 1 && self.delegate.region_id() == 1,
-            |_| unimplemented!()
-        );
     }
 
     fn handle_change<W: WriteBatch<EK>>(
