@@ -269,7 +269,7 @@ where
         cmd.mut_requests().push(ingest);
 
         let (cb, future) = paired_future_callback();
-        if let Err(e) = self.router.send_command(cmd, Callback::Write(cb)) {
+        if let Err(e) = self.router.send_command(cmd, Callback::write(cb)) {
             let mut resp = IngestResponse::default();
             resp.set_error(e.into());
             ctx.spawn(
@@ -329,14 +329,14 @@ where
             match res {
                 Ok(_) => info!(
                     "compact files in range";
-                    "start" => start.map(log_wrappers::Key),
-                    "end" => end.map(log_wrappers::Key),
+                    "start" => start.map(log_wrappers::Value::key),
+                    "end" => end.map(log_wrappers::Value::key),
                     "output_level" => ?output_level, "takes" => ?timer.elapsed()
                 ),
                 Err(ref e) => error!(%e;
                     "compact files in range failed";
-                    "start" => start.map(log_wrappers::Key),
-                    "end" => end.map(log_wrappers::Key),
+                    "start" => start.map(log_wrappers::Value::key),
+                    "end" => end.map(log_wrappers::Value::key),
                     "output_level" => ?output_level,
                 ),
             }
@@ -344,14 +344,14 @@ where
             match res {
                 Ok(_) => info!(
                     "compact files in range";
-                    "start" => start.map(log_wrappers::Key),
-                    "end" => end.map(log_wrappers::Key),
+                    "start" => start.map(log_wrappers::Value::key),
+                    "end" => end.map(log_wrappers::Value::key),
                     "output_level" => ?output_level, "takes" => ?timer.elapsed()
                 ),
                 Err(ref e) => error!(
                     "compact files in range failed";
-                    "start" => start.map(log_wrappers::Key),
-                    "end" => end.map(log_wrappers::Key),
+                    "start" => start.map(log_wrappers::Value::key),
+                    "end" => end.map(log_wrappers::Value::key),
                     "output_level" => ?output_level, "err" => %e
                 ),
             }

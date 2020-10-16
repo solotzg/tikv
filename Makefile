@@ -118,7 +118,7 @@ all: format build test error-code
 dev: format clippy
 	@env FAIL_POINT=1 make test
 
-build_by_type: error-code
+build_by_type:
 	@echo prometheus metric name prefix is ${PROMETHEUS_METRIC_NAME_PREFIX}
 	@echo engine is ${ENGINE_LABEL_VALUE}
 	@echo profile is ${PROXY_PROFILE}
@@ -138,13 +138,13 @@ build:
 # sse2-level instruction set), but with sse4.2 and the PCLMUL instruction
 # enabled (the "sse" option)
 release:
-	@export BUILD_TYPE=release; export PROXY_PROFILE=release; \
+	./release.sh
+
+upload:
 	if [[ $(shell uname -s) == "Darwin" ]]; then \
-		echo "Kernel is Darwin, change build type to debug"; \
-		unset BUILD_TYPE; \
-		export PROXY_PROFILE=debug; \
-	fi; \
-	make build_by_type;
+		export PROXY_GIT_HASH=$(shell git log -1 --format="%H"); \
+		curl -F builds/pingcap/tiflash-proxy/$${PROXY_GIT_HASH}/libtiflash_proxy.dylib=@target/debug/libtiflash_proxy.dylib http://fileserver.pingcap.net/upload; \
+	fi;
 
 # An optimized build that builds an "unportable" RocksDB, which means it is
 # built with -march native. It again includes the "sse" option by default.
@@ -181,7 +181,7 @@ endif
 # Build with release flag as if it were for distribution, but without
 # additional sanity checks and file movement.
 build_dist_release: export PROXY_PROFILE=dist_release
-build_dist_release: error-code
+build_dist_release:
 	make x-build-dist
 ifeq ($(shell uname),Linux) # Macs don't have objcopy
 	# Reduce binary size by compressing binaries.
@@ -248,12 +248,11 @@ run-test:
 	export RUST_BACKTRACE=1 && \
 	cargo -Zpackage-features test --workspace \
 		--exclude fuzzer-honggfuzz --exclude fuzzer-afl --exclude fuzzer-libfuzzer \
-		--features "${ENABLE_FEATURES} mem-profiling" ${EXTRA_CARGO_ARGS} -- --nocapture && \
+		--features "${ENABLE_FEATURES}" ${EXTRA_CARGO_ARGS} -- --nocapture && \
 	if [[ "`uname`" == "Linux" ]]; then \
-		export MALLOC_CONF=prof:true,prof_active:false && \
 		cargo -Zpackage-features test --workspace \
 			--exclude fuzzer-honggfuzz --exclude fuzzer-afl --exclude fuzzer-libfuzzer \
-			--features "${ENABLE_FEATURES} mem-profiling" ${EXTRA_CARGO_ARGS} -p tikv -p tikv_alloc --lib -- --nocapture --ignored; \
+			--features "${ENABLE_FEATURES}" ${EXTRA_CARGO_ARGS} -p tikv -p tikv_alloc --lib -- --nocapture --ignored; \
 	fi
 
 .PHONY: test
