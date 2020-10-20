@@ -106,7 +106,7 @@ clean:
 ## Development builds
 ## ------------------
 
-all: format build test
+all: format build test error-code
 
 dev: format clippy
 	@env FAIL_POINT=1 make test
@@ -333,6 +333,9 @@ ctl:
 # per https://github.com/tikv/tikv/pull/3280
 expression: format clippy
 	RUST_BACKTRACE=1 cargo test --features "${ENABLE_FEATURES}" --no-default-features --package tidb_query "expr" -- --nocapture
+
+error-code:
+	cargo run --manifest-path components/error_code/Cargo.toml --features protobuf-codec
 
 # A special target for building TiKV docker image.
 .PHONY: docker

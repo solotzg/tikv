@@ -8,7 +8,7 @@
 //! Components are often used to initialize other components, and/or must be explicitly stopped.
 //! We keep these components in the `TiKVServer` struct.
 
-use crate::{setup::*, signal_handler};
+use crate::setup::*;
 use encryption::DataKeyManager;
 use engine::rocks;
 use engine_rocks::{
@@ -59,7 +59,7 @@ use tikv::{
         status_server::StatusServer,
         Node, RaftKv, Server, DEFAULT_CLUSTER_ID,
     },
-    storage,
+    storage::{self, config::StorageConfigManger},
 };
 use tikv_util::config::VersionTrack;
 use tikv_util::{
@@ -132,7 +132,15 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     tikv.run_server(server_config);
     tikv.run_status_server();
 
-    signal_handler::wait_for_signal(Some(tikv.engines.take().unwrap().engines));
+    {
+        let _ = tikv.engines.take().unwrap().engines;
+        loop {
+            if get_tiflash_server_helper_mut().handle_check_terminated() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
 
     info!("got terminal signal from tiflash and stop all services");
 
@@ -411,12 +419,27 @@ impl TiKVServer {
 
         let cfg_controller = self.cfg_controller.as_mut().unwrap();
         cfg_controller.register(
+            tikv::config::Module::Storage,
+            Box::new(StorageConfigManger::new(
+                engines.kv.clone(),
+                self.config.storage.block_cache.shared,
+            )),
+        );
+        cfg_controller.register(
             tikv::config::Module::Rocksdb,
-            Box::new(DBConfigManger::new(engines.kv.clone(), DBType::Kv)),
+            Box::new(DBConfigManger::new(
+                engines.kv.clone(),
+                DBType::Kv,
+                self.config.storage.block_cache.shared,
+            )),
         );
         cfg_controller.register(
             tikv::config::Module::Raftdb,
-            Box::new(DBConfigManger::new(engines.raft.clone(), DBType::Raft)),
+            Box::new(DBConfigManger::new(
+                engines.raft.clone(),
+                DBType::Raft,
+                self.config.storage.block_cache.shared,
+            )),
         );
 
         let engine = RaftKv::new(raft_router.clone());
@@ -678,10 +701,7 @@ impl TiKVServer {
 
         // Start metrics flusher
         if let Err(e) = metrics_flusher.start() {
-            error!(
-                "failed to start metrics flusher";
-                "err" => %e
-            );
+            error!(%e; "failed to start metrics flusher");
         }
 
         self.to_stop.push(metrics_flusher);
@@ -713,10 +733,7 @@ impl TiKVServer {
             ) {
                 Ok(status_server) => Box::new(status_server),
                 Err(e) => {
-                    error!(
-                        "failed to start runtime for status service";
-                        "err" => %e
-                    );
+                    error!(%e; "failed to start runtime for status service");
                     return;
                 }
             };
@@ -725,10 +742,7 @@ impl TiKVServer {
                 self.config.server.status_addr.clone(),
                 self.config.server.advertise_status_addr.clone(),
             ) {
-                error!(
-                    "failed to bind addr for status service";
-                    "err" => %e
-                );
+                error!(%e; "failed to bind addr for status service");
             } else {
                 self.to_stop.push(status_server);
             }

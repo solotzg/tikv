@@ -1,5 +1,6 @@
 log-level = "debug"
 log-file = "foo"
+log-format = "json"
 slow-log-file = "slow_foo"
 slow-log-threshold = "1s"
 log-rotation-timespan = "1d"
@@ -152,6 +153,7 @@ store-pool-size = 3
 store-reschedule-duration = "2s"
 future-poll-size = 2
 hibernate-regions = false
+hibernate-timeout = "1h"
 early-apply = false
 dev-assert = true
 perf-level = 5
@@ -492,6 +494,9 @@ path = "/master/key/path"
 [security.encryption.previous-master-key]
 type = "plaintext"
 
+[backup]
+num-threads = 456
+
 [import]
 num-threads = 123
 stream-channel-window = 123
@@ -507,3 +512,5 @@ wait-for-lock-timeout = "10ms"
 wake-up-delay-duration = 100 # test backward compatible
 pipelined = true
 
+[cdc]
+min-ts-interval = "4s"

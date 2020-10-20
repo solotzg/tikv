@@ -9,7 +9,6 @@ extern crate tikv_util;
 #[macro_use]
 pub mod setup;
 pub mod server;
-pub mod signal_handler;
 
 mod tiflash_raft_proxy;
 

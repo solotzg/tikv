@@ -26,6 +26,7 @@ use tempfile::Builder;
 use test_raftstore::*;
 use tidb_query::storage::scanner::{RangesScanner, RangesScannerOptions};
 use tidb_query::storage::{IntervalRange, Range};
+use tikv::config::BackupConfig;
 use tikv::coprocessor::checksum_crc64_xor;
 use tikv::coprocessor::dag::TiKVStorage;
 use tikv::storage::kv::Engine;
@@ -82,6 +83,7 @@ impl TestSuite {
                 sim.storages[&id].clone(),
                 sim.region_info_accessors[&id].clone(),
                 engines.kv.clone(),
+                BackupConfig { num_threads: 4 },
             );
             let mut worker = Worker::new(format!("backup-{}", id));
             worker.start(backup_endpoint).unwrap();
@@ -584,8 +586,17 @@ fn test_backup_rawkv() {
         &tmp.path().join(format!("{}", backup_ts.next().next())),
     );
     let resps3 = block_on(rx.collect::<Vec<_>>());
-    assert_eq!(files1, resps3[0].files);
+    let files3 = resps3[0].files.clone();
 
+    // After https://github.com/tikv/tikv/pull/8707 merged.
+    // the backup file name will based on local timestamp.
+    // so the two backup's file name may not be same, we should skip this check.
+    assert_eq!(files1.len(), 1);
+    assert_eq!(files3.len(), 1);
+    assert_eq!(files1[0].sha256, files3[0].sha256);
+    assert_eq!(files1[0].total_bytes, files3[0].total_bytes);
+    assert_eq!(files1[0].total_kvs, files3[0].total_kvs);
+    assert_eq!(files1[0].size, files3[0].size);
     suite.stop();
 }
 
