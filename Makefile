@@ -113,7 +113,7 @@ dev: format clippy
 
 build: export PROXY_PROFILE=debug
 build:
-	cargo build --no-default-features --features "${ENABLE_FEATURES}" -p tiflash-proxy
+	cargo build --no-default-features --features "${ENABLE_FEATURES}"
 
 ## Release builds (optimized dev builds)
 ## ----------------------------
@@ -127,7 +127,7 @@ build:
 # enabled (the "sse" option)
 release: export PROXY_PROFILE=release
 release:
-	cargo build --release --no-default-features --features "${ENABLE_FEATURES}" -p tiflash-proxy
+	cargo build --release --no-default-features --features "${ENABLE_FEATURES}"
 
 # An optimized build that builds an "unportable" RocksDB, which means it is
 # built with -march native. It again includes the "sse" option by default.
