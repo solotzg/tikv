@@ -1112,14 +1112,18 @@ impl ApplyDelegate {
         let need_write_apply_state = match flash_res {
             TiFlashApplyRes::Persist => true,
             TiFlashApplyRes::NotFound => {
-                error!(
-                    "region not found in tiflash, maybe have exec `RemoveNode` first";
-                    "region_id" => self.region_id(),
-                    "peer_id" => self.id(),
-                    "term" => term,
-                    "index" => index,
-                );
-                true
+                if req.has_admin_request() {
+                    error!(
+                        "region not found in tiflash, maybe have exec `RemoveNode` first";
+                        "region_id" => self.region_id(),
+                        "peer_id" => self.id(),
+                        "term" => term,
+                        "index" => index,
+                    );
+                    true
+                } else {
+                    false
+                }
             }
             _ => false,
         };
