@@ -213,9 +213,9 @@ members = [
   "components/encryption",
   "components/error_code",
   "components/concurrency_manager",
-  "tiflash-proxy",
+  "raftstore-proxy",
 ]
-default-members = ["tiflash-proxy"]
+default-members = ["raftstore-proxy"]
 
 [profile.dev]
 opt-level = 0
