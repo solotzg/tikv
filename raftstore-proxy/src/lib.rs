@@ -7,12 +7,12 @@ fn ____useless_func_to_make_compiler_happy(pp: &mut engine_rocks::raw::Env) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn print_tiflash_proxy_version() {
+pub unsafe extern "C" fn print_raftstore_proxy_version() {
     cmd::print_proxy_version();
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn run_tiflash_proxy_ffi(
+pub unsafe extern "C" fn run_raftstore_proxy_ffi(
     argc: c_int,
     argv: *const *const c_char,
     helper: *const u8,
