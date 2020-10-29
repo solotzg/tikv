@@ -189,6 +189,14 @@ pub unsafe extern "C" fn run_tiflash_proxy_ffi(
                 .required(false)
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("advertise-engine-addr")
+                .long("advertise-engine-addr")
+                .help("Set advertise engine addr")
+                .value_name("IP:PORT")
+                .required(false)
+                .takes_value(true),
+        )
         .get_matches_from(args);
 
     if matches.is_present("print-sample-config") {
