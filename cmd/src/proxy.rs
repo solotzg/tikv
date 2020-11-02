@@ -5,7 +5,9 @@ use std::process;
 
 use crate::setup::{ensure_no_unrecognized_config, validate_and_persist_config};
 use clap::{App, Arg};
-use raftstore::tiflash_ffi::{get_tiflash_server_helper, TIFLASH_SERVER_HELPER_PTR};
+use raftstore::storage_engine_ffi::{
+    get_storage_engine_server_helper, STORAGE_ENGINE_SERVER_HELPER_PTR,
+};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use tikv::config::TiKvConfig;
@@ -14,10 +16,14 @@ pub fn print_proxy_version() {
     println!("{}", crate::proxy_version_info());
 }
 
-pub unsafe fn run_proxy(argc: c_int, argv: *const *const c_char, tiflash_server_helper: *const u8) {
+pub unsafe fn run_proxy(
+    argc: c_int,
+    argv: *const *const c_char,
+    storage_engine_server_helper: *const u8,
+) {
     {
-        let ptr = &TIFLASH_SERVER_HELPER_PTR as *const _ as *mut _;
-        *ptr = tiflash_server_helper;
+        let ptr = &STORAGE_ENGINE_SERVER_HELPER_PTR as *const _ as *mut _;
+        *ptr = storage_engine_server_helper;
     }
 
     let mut args = vec![];
@@ -27,10 +33,10 @@ pub unsafe fn run_proxy(argc: c_int, argv: *const *const c_char, tiflash_server_
         args.push(raw.to_str().unwrap());
     }
 
-    get_tiflash_server_helper().check();
+    get_storage_engine_server_helper().check();
 
-    let matches = App::new("TiFlash Proxy")
-        .about("Proxy for TiFLash to connect TiKV cluster")
+    let matches = App::new("RaftStore Proxy")
+        .about("Proxy for storage engine to connect TiKV cluster")
         .author("tongzhigao@pingcap.com")
         .version(crate::proxy_version_info().as_ref())
         .long_version(crate::proxy_version_info().as_ref())
@@ -162,16 +168,16 @@ pub unsafe fn run_proxy(argc: c_int, argv: *const *const c_char, tiflash_server_
                 ),
         )
         .arg(
-            Arg::with_name("tiflash-version")
-                .long("tiflash-version")
-                .help("Set tiflash version")
+            Arg::with_name("engine-version")
+                .long("engine-version")
+                .help("Set storage engine version")
                 .required(true)
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("tiflash-git-hash")
-                .long("tiflash-git-hash")
-                .help("Set tiflash git hash")
+            Arg::with_name("engine-git-hash")
+                .long("engine-git-hash")
+                .help("Set storage engine git hash")
                 .required(true)
                 .takes_value(true),
         )

@@ -134,27 +134,28 @@ where
     ) {
         let region = ctx.region();
         let region_id = region.get_id();
-        let (region_size, region_keys) = match crate::tiflash_ffi::get_tiflash_server_helper()
-            .get_region_approximate_size_keys_of_tiflash(region)
-        {
-            Ok(r) => r,
-            Err(e) => {
-                warn!(
-                    "failed to get approximate stat";
-                    "region_id" => region_id,
-                    "err" => %e,
-                    "error_code" => %e.error_code(),
-                );
-                // Need to check size.
-                host.add_checker(Box::new(Checker::new(
-                    host.cfg.region_max_size.0,
-                    host.cfg.region_split_size.0,
-                    host.cfg.batch_split_limit,
-                    policy,
-                )));
-                return;
-            }
-        };
+        let (region_size, region_keys) =
+            match crate::storage_engine_ffi::get_storage_engine_server_helper()
+                .get_region_approximate_size_keys_of_storage_engine(region)
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(
+                        "failed to get approximate stat";
+                        "region_id" => region_id,
+                        "err" => %e,
+                        "error_code" => %e.error_code(),
+                    );
+                    // Need to check size.
+                    host.add_checker(Box::new(Checker::new(
+                        host.cfg.region_max_size.0,
+                        host.cfg.region_split_size.0,
+                        host.cfg.batch_split_limit,
+                        policy,
+                    )));
+                    return;
+                }
+            };
 
         // send it to raftstore to update region approximate size
         let res = CasualMessage::RegionApproximateSizeKeys {

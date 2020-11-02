@@ -254,7 +254,7 @@ where
         method: crate::coprocessor::SplitCheckerType,
     ) -> Result<Vec<Vec<u8>>> {
         let timer = CHECK_SPILT_HISTOGRAM.start_coarse_timer();
-        let checker_cfg = crate::tiflash_ffi::CheckerConfig {
+        let checker_cfg = crate::storage_engine_ffi::CheckerConfig {
             max_size: cfg.region_max_size.0,
             split_size: cfg.region_split_size.0,
             batch_split_limit: if method == crate::coprocessor::SplitCheckerType::SizeAutoSplit {
@@ -263,8 +263,9 @@ where
                 0
             },
         };
-        let (size, keys, split_keys) = crate::tiflash_ffi::get_tiflash_server_helper()
-            .scan_split_keys(region_id, start_key, end_key, checker_cfg)?;
+        let (size, keys, split_keys) = crate::storage_engine_ffi::get_storage_engine_server_helper(
+        )
+        .scan_split_keys(region_id, start_key, end_key, checker_cfg)?;
         {
             if size == 0 && keys == 0 {
                 // no need to update property

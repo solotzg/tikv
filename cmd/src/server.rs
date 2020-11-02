@@ -76,8 +76,8 @@ use tokio::runtime::Builder;
 
 use crate::setup::*;
 
-use raftstore::tiflash_ffi::{
-    get_tiflash_server_helper, TiFlashRaftProxy, TiFlashRaftProxyHelper, TiFlashStatus,
+use raftstore::storage_engine_ffi::{
+    get_storage_engine_server_helper, RaftStoreProxy, RaftStoreProxyHelper, StorageEngineStatus,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -109,28 +109,32 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
             tikv.init_fs();
             tikv.init_yatp();
             tikv.init_encryption();
-            let proxy = TiFlashRaftProxy {
+            let proxy = RaftStoreProxy {
                 stopped: AtomicBool::default(),
                 key_manager: tikv.encryption_key_manager.clone(),
             };
 
-            let proxy_helper = TiFlashRaftProxyHelper::new(&proxy);
+            let proxy_helper = RaftStoreProxyHelper::new(&proxy);
 
-            info!("set tiflash proxy helper");
+            info!("set raft store proxy helper");
 
-            get_tiflash_server_helper().handle_set_proxy(&proxy_helper);
+            get_storage_engine_server_helper().handle_set_proxy(&proxy_helper);
 
-            info!("wait for tiflash server to start");
-            while get_tiflash_server_helper().handle_get_tiflash_status() == TiFlashStatus::IDLE {
+            info!("wait for storage engine server to start");
+            while get_storage_engine_server_helper().handle_get_storage_engine_status()
+                == StorageEngineStatus::IDLE
+            {
                 thread::sleep(Duration::from_millis(200));
             }
 
-            if get_tiflash_server_helper().handle_get_tiflash_status() != TiFlashStatus::Running {
-                info!("tiflash server is not running, make proxy exit");
+            if get_storage_engine_server_helper().handle_get_storage_engine_status()
+                != StorageEngineStatus::Running
+            {
+                info!("storage engine server is not running, make proxy exit");
                 return;
             }
 
-            info!("tiflash server is started");
+            info!("storage engine server is started");
             let engines = tikv.init_raw_engines();
             tikv.init_engines(engines);
             let gc_worker = tikv.init_gc_worker();
@@ -143,27 +147,28 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
             {
                 let _ = tikv.engines.take().unwrap().engines;
                 loop {
-                    if get_tiflash_server_helper().handle_check_terminated() {
+                    if get_storage_engine_server_helper().handle_check_terminated() {
                         break;
                     }
                     thread::sleep(Duration::from_millis(200));
                 }
             }
 
-            info!("got terminal signal from tiflash and stop all services");
+            info!("got terminal signal from storage engine and stop all services");
 
             tikv.stop();
 
             proxy.stopped.store(true, Ordering::SeqCst);
 
-            info!("all services in tiflash proxy are stopped");
+            info!("all services in raft store proxy are stopped");
 
-            info!("wait for tiflash server to stop");
-            while get_tiflash_server_helper().handle_get_tiflash_status() != TiFlashStatus::Stopped
+            info!("wait for storage engine server to stop");
+            while get_storage_engine_server_helper().handle_get_storage_engine_status()
+                != StorageEngineStatus::Stopped
             {
                 thread::sleep(Duration::from_millis(200));
             }
-            info!("tiflash server is stopped");
+            info!("storage engine server is stopped");
         }};
     }
 

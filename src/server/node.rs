@@ -93,14 +93,14 @@ where
         if !cfg.engine_addr.is_empty() {
             store.set_address(cfg.engine_addr.clone());
         } else {
-            panic!("tiflash engine addr is empty");
+            panic!("engine addr is empty");
         }
 
-        if !cfg.tiflash_version.is_empty() {
-            store.set_version(cfg.tiflash_version.clone());
+        if !cfg.engine_version.is_empty() {
+            store.set_version(cfg.engine_version.clone());
         }
-        if !cfg.tiflash_git_hash.is_empty() {
-            store.set_git_hash(cfg.tiflash_git_hash.clone());
+        if !cfg.engine_git_hash.is_empty() {
+            store.set_git_hash(cfg.engine_git_hash.clone());
         }
 
         if cfg.advertise_status_addr.is_empty() {

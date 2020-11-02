@@ -34,7 +34,7 @@ use crate::store::Callback;
 use crate::store::StoreInfo;
 use crate::store::{CasualMessage, PeerMsg, RaftCommand, RaftRouter, StoreMsg};
 
-use crate::tiflash_ffi::get_tiflash_server_helper;
+use crate::storage_engine_ffi::get_storage_engine_server_helper;
 use concurrency_manager::ConcurrencyManager;
 use pd_client::metrics::*;
 use pd_client::{Error, PdClient, RegionStat};
@@ -654,7 +654,7 @@ where
     }
 
     fn handle_store_heartbeat(&mut self, mut stats: pdpb::StoreStats, store_info: StoreInfo<EK>) {
-        let fs_stats = get_tiflash_server_helper().handle_compute_fs_stats();
+        let fs_stats = get_storage_engine_server_helper().handle_compute_fs_stats();
         if fs_stats.ok == 0 {
             return;
         }
@@ -1068,8 +1068,8 @@ where
             } => {
                 let (approximate_size, approximate_keys) =
                     if approximate_size.is_none() || approximate_keys.is_none() {
-                        crate::tiflash_ffi::get_tiflash_server_helper()
-                            .get_region_approximate_size_keys_of_tiflash(&region)
+                        crate::storage_engine_ffi::get_storage_engine_server_helper()
+                            .get_region_approximate_size_keys_of_storage_engine(&region)
                             .unwrap_or_default()
                     } else {
                         (approximate_size.unwrap(), approximate_keys.unwrap())

@@ -62,9 +62,9 @@ use crate::store::{cmd_resp, util, Config, RegionSnapshot, RegionTask};
 use crate::{observe_perf_context_type, report_perf_context, Error, Result};
 
 use super::metrics::*;
-use crate::tiflash_ffi::{
-    gen_snap_kv_data_from_sst, get_tiflash_server_helper, RaftCmdHeader, SnapshotHelper,
-    TiFlashApplyRes, WriteCmdCf, WriteCmdType, WriteCmds,
+use crate::storage_engine_ffi::{
+    gen_snap_kv_data_from_sst, get_storage_engine_server_helper, RaftCmdHeader, SnapshotHelper,
+    StorageEngineApplyRes, WriteCmdCf, WriteCmdType, WriteCmds,
 };
 const DEFAULT_APPLY_WB_SIZE: usize = 4 * 1024;
 const APPLY_WB_SHRINK_SIZE: usize = 1024 * 1024;
@@ -946,7 +946,7 @@ where
         {
             // hacked by solotzg.
             let cmds = WriteCmds::new();
-            get_tiflash_server_helper().handle_write_raft_cmd(
+            get_storage_engine_server_helper().handle_write_raft_cmd(
                 &cmds,
                 RaftCmdHeader::new(self.region.get_id(), index, term),
             );
@@ -1117,7 +1117,7 @@ where
         ctx.exec_ctx = Some(self.new_ctx(index, term));
         ctx.kv_wb_mut().set_save_point();
         let mut origin_epoch = None;
-        let (resp, exec_result, flash_res) = match self.exec_raft_cmd(ctx, &req) {
+        let (resp, exec_result, engine_apply_res) = match self.exec_raft_cmd(ctx, &req) {
             Ok(a) => {
                 ctx.kv_wb_mut().pop_save_point().unwrap();
                 if req.has_admin_request() {
@@ -1144,7 +1144,7 @@ where
                 {
                     // hacked by solotzg.
                     let cmds = WriteCmds::new();
-                    get_tiflash_server_helper().handle_write_raft_cmd(
+                    get_storage_engine_server_helper().handle_write_raft_cmd(
                         &cmds,
                         RaftCmdHeader::new(self.region.get_id(), index, term),
                     );
@@ -1153,7 +1153,7 @@ where
                 (
                     cmd_resp::new_error(e),
                     ApplyResult::None,
-                    TiFlashApplyRes::None,
+                    StorageEngineApplyRes::None,
                 )
             }
         };
@@ -1167,12 +1167,12 @@ where
         self.apply_state = exec_ctx.apply_state;
         self.applied_index_term = term;
 
-        let need_write_apply_state = match flash_res {
-            TiFlashApplyRes::Persist => true,
-            TiFlashApplyRes::NotFound => {
+        let need_write_apply_state = match engine_apply_res {
+            StorageEngineApplyRes::Persist => true,
+            StorageEngineApplyRes::NotFound => {
                 if req.has_admin_request() {
                     error!(
-                        "region not found in tiflash, maybe have exec `RemoveNode` first";
+                        "region not found in storage engine, maybe have exec `RemoveNode` first";
                         "region_id" => self.region_id(),
                         "peer_id" => self.id(),
                         "term" => term,
@@ -1271,7 +1271,11 @@ where
         &mut self,
         ctx: &mut ApplyContext<EK, W>,
         req: &RaftCmdRequest,
-    ) -> Result<(RaftCmdResponse, ApplyResult<EK::Snapshot>, TiFlashApplyRes)> {
+    ) -> Result<(
+        RaftCmdResponse,
+        ApplyResult<EK::Snapshot>,
+        StorageEngineApplyRes,
+    )> {
         // Include region for epoch not match after merge may cause key not in range.
         let include_region =
             req.get_header().get_region_epoch().get_version() >= self.last_merge_version;
@@ -1287,7 +1291,11 @@ where
         &mut self,
         ctx: &mut ApplyContext<EK, W>,
         req: &RaftCmdRequest,
-    ) -> Result<(RaftCmdResponse, ApplyResult<EK::Snapshot>, TiFlashApplyRes)> {
+    ) -> Result<(
+        RaftCmdResponse,
+        ApplyResult<EK::Snapshot>,
+        StorageEngineApplyRes,
+    )> {
         let request = req.get_admin_request();
         let cmd_type = request.get_cmd_type();
 
@@ -1343,11 +1351,11 @@ where
             resp.mut_header().set_uuid(uuid);
         }
 
-        let flash_res = if let ApplyResult::WaitMergeSource(_) = &exec_result {
-            TiFlashApplyRes::None
+        let engine_apply_res = if let ApplyResult::WaitMergeSource(_) = &exec_result {
+            StorageEngineApplyRes::None
         } else {
             // hacked by solotzg.
-            get_tiflash_server_helper().handle_admin_raft_cmd(
+            get_storage_engine_server_helper().handle_admin_raft_cmd(
                 &request,
                 &response,
                 RaftCmdHeader::new(
@@ -1358,8 +1366,8 @@ where
             )
         };
 
-        match flash_res {
-            TiFlashApplyRes::None => {
+        match engine_apply_res {
+            StorageEngineApplyRes::None => {
                 if cmd_type == AdminCmdType::CompactLog {
                     response = AdminResponse::new();
                     exec_result = ApplyResult::None;
@@ -1376,14 +1384,18 @@ where
         }
 
         resp.set_admin_response(response);
-        Ok((resp, exec_result, flash_res))
+        Ok((resp, exec_result, engine_apply_res))
     }
 
     fn exec_write_cmd<W: WriteBatch<EK>>(
         &mut self,
         ctx: &mut ApplyContext<EK, W>,
         req: &RaftCmdRequest,
-    ) -> Result<(RaftCmdResponse, ApplyResult<EK::Snapshot>, TiFlashApplyRes)> {
+    ) -> Result<(
+        RaftCmdResponse,
+        ApplyResult<EK::Snapshot>,
+        StorageEngineApplyRes,
+    )> {
         const NONE_STR: &str = "";
         let requests = req.get_requests();
         let mut responses = Vec::with_capacity(requests.len());
@@ -1397,7 +1409,7 @@ where
             match cmd_type {
                 CmdType::Put => {
                     let put = req.get_put();
-                    let cf = crate::tiflash_ffi::name_to_cf(put.get_cf());
+                    let cf = crate::storage_engine_ffi::name_to_cf(put.get_cf());
 
                     let (key, value) = (put.get_key(), put.get_value());
                     util::check_key_in_region(key, &self.region)?;
@@ -1411,7 +1423,7 @@ where
                 }
                 CmdType::Delete => {
                     let del = req.get_delete();
-                    let cf = crate::tiflash_ffi::name_to_cf(del.get_cf());
+                    let cf = crate::storage_engine_ffi::name_to_cf(del.get_cf());
 
                     let key = del.get_key();
                     util::check_key_in_region(key, &self.region)?;
@@ -1433,7 +1445,7 @@ where
                     ssts.push(req.get_ingest_sst().get_sst().clone());
                 }
                 CmdType::Snap | CmdType::Get | CmdType::DeleteRange => {
-                    // tiflash will drop table, no need DeleteRange
+                    // storage engine will drop table, no need DeleteRange
                     continue;
                 }
                 CmdType::Prewrite | CmdType::Invalid | CmdType::ReadIndex => {
@@ -1451,8 +1463,8 @@ where
 
         return if !ssts.is_empty() {
             assert_eq!(cmds.len(), 0);
-            match self.handle_ingest_sst_for_tiflash(&ctx, &ssts) {
-                TiFlashApplyRes::None => {
+            match self.handle_ingest_sst_for_storage_engine(&ctx, &ssts) {
+                StorageEngineApplyRes::None => {
                     self.pending_clean_ssts.append(&mut ssts);
                     info!(
                         "skip persist for ingest sst";
@@ -1463,9 +1475,9 @@ where
                         "pending_ssts" => ?self.pending_clean_ssts
                     );
 
-                    Ok((resp, ApplyResult::None, TiFlashApplyRes::None))
+                    Ok((resp, ApplyResult::None, StorageEngineApplyRes::None))
                 }
-                TiFlashApplyRes::NotFound | TiFlashApplyRes::Persist => {
+                StorageEngineApplyRes::NotFound | StorageEngineApplyRes::Persist => {
                     ssts.append(&mut self.pending_clean_ssts);
                     info!(
                         "ingest sst success";
@@ -1479,13 +1491,13 @@ where
                     Ok((
                         resp,
                         ApplyResult::Res(ExecResult::IngestSst { ssts }),
-                        TiFlashApplyRes::Persist,
+                        StorageEngineApplyRes::Persist,
                     ))
                 }
             }
         } else {
-            let flash_res = {
-                get_tiflash_server_helper().handle_write_raft_cmd(
+            let engine_apply_res = {
+                get_storage_engine_server_helper().handle_write_raft_cmd(
                     &cmds,
                     RaftCmdHeader::new(
                         self.region.get_id(),
@@ -1494,7 +1506,7 @@ where
                     ),
                 )
             };
-            Ok((resp, ApplyResult::None, flash_res))
+            Ok((resp, ApplyResult::None, engine_apply_res))
         };
     }
 }
@@ -1660,11 +1672,11 @@ where
         Ok(resp)
     }
 
-    fn handle_ingest_sst_for_tiflash<W: WriteBatch<EK>>(
+    fn handle_ingest_sst_for_storage_engine<W: WriteBatch<EK>>(
         &mut self,
         ctx: &ApplyContext<EK, W>,
         ssts: &Vec<SstMeta>,
-    ) -> TiFlashApplyRes {
+    ) -> StorageEngineApplyRes {
         let mut snapshot_helper = SnapshotHelper::default();
 
         for sst in ssts {
@@ -1689,10 +1701,12 @@ where
             let cf_file_path = ctx.importer.get_path(sst);
             let cf_file_path = cf_file_path.to_str().unwrap();
 
-            if get_tiflash_server_helper().is_tiflash_snapshot(cf_file_path.as_bytes()) {
+            if get_storage_engine_server_helper()
+                .is_storage_engine_snapshot(cf_file_path.as_bytes())
+            {
                 assert!(sst.get_cf_name() == CF_WRITE);
-                // TODO: support ingest sst generated by tiflash
-                panic!("can not ingest sst generated by tiflash");
+                // TODO: support ingest sst generated by storage engine
+                panic!("can not ingest sst generated by storage engine");
                 continue;
             }
 
@@ -1707,7 +1721,7 @@ where
             }
         }
 
-        get_tiflash_server_helper().handle_ingest_sst(
+        get_storage_engine_server_helper().handle_ingest_sst(
             &mut snapshot_helper,
             RaftCmdHeader::new(
                 self.region.get_id(),
@@ -3011,15 +3025,16 @@ impl GenSnapTask {
         EK: KvEngine,
         W: WriteBatch<EK>,
     {
-        let tiflash_snap = get_tiflash_server_helper().gen_tiflash_snapshot(RaftCmdHeader::new(
-            self.region_id,
-            last_applied_state.get_applied_index(),
-            last_applied_index_term,
-        ));
+        let storage_engine_snap =
+            get_storage_engine_server_helper().gen_storage_engine_snapshot(RaftCmdHeader::new(
+                self.region_id,
+                last_applied_state.get_applied_index(),
+                last_applied_index_term,
+            ));
 
-        if tiflash_snap.is_null() {
+        if storage_engine_snap.is_null() {
             return Err(Error::Other(
-                "something wrong happened when generate snapshot in tiflash".into(),
+                "something wrong happened when generate snapshot in storage engine".into(),
             ));
         }
 
@@ -3042,7 +3057,7 @@ impl GenSnapTask {
             // This snapshot may be held for a long time, which may cause too many
             // open files in rocksdb.
             kv_snap,
-            tiflash_snap,
+            storage_engine_snap,
         };
         box_try!(apply_ctx.region_scheduler.schedule(snapshot));
         Ok(())

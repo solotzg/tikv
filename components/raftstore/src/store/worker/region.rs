@@ -31,7 +31,7 @@ use tikv_util::timer::Timer;
 use tikv_util::worker::{Runnable, RunnableWithTimer};
 
 use super::metrics::*;
-use crate::tiflash_ffi;
+use crate::storage_engine_ffi;
 
 const GENERATE_POOL_SIZE: usize = 2;
 
@@ -43,7 +43,7 @@ pub const PENDING_APPLY_CHECK_INTERVAL: u64 = 20;
 
 const CLEANUP_MAX_REGION_COUNT: usize = 128;
 
-impl std::fmt::Debug for tiflash_ffi::RawCppPtr {
+impl std::fmt::Debug for storage_engine_ffi::RawCppPtr {
     fn fmt(&self, _f: &mut Formatter<'_>) -> std::fmt::Result {
         Ok(())
     }
@@ -58,7 +58,7 @@ pub enum Task<S> {
         last_applied_state: RaftApplyState,
         kv_snap: S,
         notifier: SyncSender<RaftSnapshot>,
-        tiflash_snap: tiflash_ffi::RawCppPtr,
+        storage_engine_snap: storage_engine_ffi::RawCppPtr,
     },
     Apply {
         region_id: u64,
@@ -105,7 +105,7 @@ impl<S> Display for Task<S> {
     }
 }
 
-struct TiFlashApplyTask {
+struct StorageEngineApplyTask {
     region_id: u64,
     peer_id: u64,
     status: Arc<AtomicUsize>,
@@ -256,7 +256,7 @@ where
         last_applied_state: RaftApplyState,
         kv_snap: EK::Snapshot,
         notifier: SyncSender<RaftSnapshot>,
-        tiflash_snap: tiflash_ffi::RawCppPtr,
+        storage_engine_snap: storage_engine_ffi::RawCppPtr,
     ) -> Result<()> {
         // do we need to check leader here?
         let snap = box_try!(store::do_snapshot::<EK>(
@@ -266,7 +266,7 @@ where
             region_id,
             last_applied_index_term,
             last_applied_state,
-            tiflash_snap,
+            storage_engine_snap,
         ));
         // Only enable the fail point when the region id is equal to 1, which is
         // the id of bootstrapped region in tests.
@@ -293,7 +293,7 @@ where
         last_applied_state: RaftApplyState,
         kv_snap: EK::Snapshot,
         notifier: SyncSender<RaftSnapshot>,
-        tiflash_snap: tiflash_ffi::RawCppPtr,
+        storage_engine_snap: storage_engine_ffi::RawCppPtr,
     ) {
         SNAP_COUNTER.generate.all.inc();
         let start = tikv_util::time::Instant::now();
@@ -304,7 +304,7 @@ where
             last_applied_state,
             kv_snap,
             notifier,
-            tiflash_snap,
+            storage_engine_snap,
         ) {
             error!(%e; "failed to generate snap!!!"; "region_id" => region_id,);
             return;
@@ -377,7 +377,7 @@ where
     }
 
     /// Applies snapshot data of the Region.
-    fn apply_snap(&mut self, task: TiFlashApplyTask) -> Result<()> {
+    fn apply_snap(&mut self, task: StorageEngineApplyTask) -> Result<()> {
         let region_id = task.region_id;
         let peer_id = task.peer_id;
         let abort = task.status;
@@ -412,11 +412,11 @@ where
             );
             assert_eq!(idx, snap.index);
             assert_eq!(term, snap.term);
-            tiflash_ffi::get_tiflash_server_helper()
+            storage_engine_ffi::get_storage_engine_server_helper()
                 .apply_pre_handled_snapshot(snap.inner.raw_ptr(), snap.inner.get_type());
         } else {
             info!(
-                "apply data to tiflash";
+                "apply data to storage engine";
                 "region_id" => region_id,
             );
             let s = box_try!(self.mgr.get_concrete_snapshot_for_applying(&snap_key));
@@ -425,7 +425,7 @@ where
             }
             check_abort(&abort)?;
             let pre_handled_snap = s.pre_handle_snapshot(&region, peer_id, idx, term);
-            tiflash_ffi::get_tiflash_server_helper().apply_pre_handled_snapshot(
+            storage_engine_ffi::get_storage_engine_server_helper().apply_pre_handled_snapshot(
                 pre_handled_snap.inner.raw_ptr(),
                 pre_handled_snap.inner.get_type(),
             );
@@ -447,7 +447,7 @@ where
     }
 
     /// Tries to apply the snapshot of the specified Region. It calls `apply_snap` to do the actual work.
-    fn handle_apply(&mut self, task: TiFlashApplyTask) {
+    fn handle_apply(&mut self, task: StorageEngineApplyTask) {
         let status = task.status.clone();
         let region_id = task.region_id;
         status.compare_and_swap(JOB_STATUS_PENDING, JOB_STATUS_RUNNING, Ordering::SeqCst);
@@ -646,7 +646,7 @@ where
     ctx: SnapContext<EK, ER, R>,
     // we may delay some apply tasks if level 0 files to write stall threshold,
     // pending_applies records all delayed apply task, and will check again later
-    pending_applies: VecDeque<TiFlashApplyTask>,
+    pending_applies: VecDeque<StorageEngineApplyTask>,
     opt_pre_handle_snap: bool,
 }
 
@@ -742,7 +742,7 @@ where
                 last_applied_state,
                 kv_snap,
                 notifier,
-                tiflash_snap,
+                storage_engine_snap,
             } => {
                 // It is safe for now to handle generating and applying snapshot concurrently,
                 // but it may not when merge is implemented.
@@ -756,7 +756,7 @@ where
                         last_applied_state,
                         kv_snap,
                         notifier,
-                        tiflash_snap,
+                        storage_engine_snap,
                     );
                     tikv_alloc::remove_thread_memory_accessor();
                 });
@@ -779,7 +779,7 @@ where
                     sender.send(None).unwrap();
                 }
 
-                self.pending_applies.push_back(TiFlashApplyTask {
+                self.pending_applies.push_back(StorageEngineApplyTask {
                     region_id,
                     peer_id,
                     status,

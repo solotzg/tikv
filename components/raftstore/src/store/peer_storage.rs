@@ -19,10 +19,10 @@ use protobuf::Message;
 use raft::eraftpb::{ConfState, Entry, HardState, Snapshot};
 use raft::{self, Error as RaftError, RaftState, Ready, Storage, StorageError};
 
+use crate::storage_engine_ffi;
 use crate::store::fsm::GenSnapTask;
 use crate::store::util;
 use crate::store::ProposalContext;
-use crate::tiflash_ffi;
 use crate::{Error, Result};
 use engine_traits::{RaftEngine, RaftLogBatch};
 use into_other::into_other;
@@ -1508,7 +1508,7 @@ pub fn do_snapshot<E>(
     region_id: u64,
     last_applied_index_term: u64,
     last_applied_state: RaftApplyState,
-    tiflash_snap: tiflash_ffi::RawCppPtr,
+    storage_engine_snap: storage_engine_ffi::RawCppPtr,
 ) -> raft::Result<Snapshot>
 where
     E: KvEngine,
@@ -1576,7 +1576,7 @@ where
         state.get_region(),
         &mut snap_data,
         &mut stat,
-        tiflash_snap,
+        storage_engine_snap,
     )?;
     let v = snap_data.write_to_bytes()?;
     snapshot.set_data(v);

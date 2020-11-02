@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use std::{error, result, str, thread, time, u64};
 
-use crate::tiflash_ffi;
+use crate::storage_engine_ffi;
 use encryption::{
     create_aes_ctr_crypter, encryption_method_from_db_encryption_method, DataKeyManager, Iv,
 };
@@ -199,7 +199,7 @@ pub trait Snapshot<EK: KvEngine>: GenericSnapshot {
         region: &Region,
         snap_data: &mut RaftSnapshotData,
         stat: &mut SnapshotStatistics,
-        tiflash_snap: tiflash_ffi::RawCppPtr,
+        storage_engine_snap: storage_engine_ffi::RawCppPtr,
     ) -> RaftStoreResult<()>;
     fn apply(&mut self, options: ApplyOptions<EK>) -> Result<()>;
 }
@@ -361,7 +361,7 @@ pub struct PreHandledSnapshot {
     pub empty: bool,
     pub index: u64,
     pub term: u64,
-    pub inner: tiflash_ffi::RawCppPtr,
+    pub inner: storage_engine_ffi::RawCppPtr,
 }
 
 unsafe impl Send for PreHandledSnapshot {}
@@ -370,8 +370,8 @@ impl Snap {
     fn read_lock_cf_file(
         path: &str,
         key_mgr: Option<&Arc<DataKeyManager>>,
-    ) -> tiflash_ffi::SnapshotKV {
-        let mut lock_cf_snap = tiflash_ffi::SnapshotKV::new();
+    ) -> storage_engine_ffi::SnapshotKV {
+        let mut lock_cf_snap = storage_engine_ffi::SnapshotKV::new();
         let file = File::open(path).unwrap();
         let mut decoder = if let Some(key_mgr) = key_mgr {
             let reader = get_decrypter_reader(path, key_mgr).unwrap();
@@ -393,8 +393,11 @@ impl Snap {
         lock_cf_snap
     }
 
-    fn gen_snapshot_helper(&self, region: &kvproto::metapb::Region) -> tiflash_ffi::SnapshotHelper {
-        let mut snapshot_helper = tiflash_ffi::SnapshotHelper::default();
+    fn gen_snapshot_helper(
+        &self,
+        region: &kvproto::metapb::Region,
+    ) -> storage_engine_ffi::SnapshotHelper {
+        let mut snapshot_helper = storage_engine_ffi::SnapshotHelper::default();
 
         for cf_file in &self.cf_files {
             if cf_file.size == 0 {
@@ -404,7 +407,7 @@ impl Snap {
 
             let (cf_type, snap_kv) = if plain_file_used(cf_file.cf) {
                 (
-                    tiflash_ffi::WriteCmdCf::Lock,
+                    storage_engine_ffi::WriteCmdCf::Lock,
                     Snap::read_lock_cf_file(
                         cf_file.path.to_str().unwrap(),
                         self.mgr.encryption_key_manager.as_ref(),
@@ -412,15 +415,15 @@ impl Snap {
                 )
             } else {
                 let cf_type = if cf_file.cf == CF_DEFAULT {
-                    tiflash_ffi::WriteCmdCf::Default
+                    storage_engine_ffi::WriteCmdCf::Default
                 } else if cf_file.cf == CF_WRITE {
-                    tiflash_ffi::WriteCmdCf::Write
+                    storage_engine_ffi::WriteCmdCf::Write
                 } else {
                     unreachable!()
                 };
                 (
                     cf_type,
-                    tiflash_ffi::gen_snap_kv_data_from_sst(
+                    storage_engine_ffi::gen_snap_kv_data_from_sst(
                         cf_file.path.to_str().unwrap(),
                         self.mgr.encryption_key_manager.clone(),
                     ),
@@ -443,14 +446,14 @@ impl Snap {
         index: u64,
         term: u64,
     ) -> PreHandledSnapshot {
-        let tiflash_snapshot = (|| {
+        let storage_engine_snapshot = (|| {
             let mut res = None;
             for cf in &self.cf_files {
                 if cf.size == 0 {
                     continue;
                 }
-                if tiflash_ffi::get_tiflash_server_helper()
-                    .is_tiflash_snapshot(cf.path.to_str().unwrap().as_bytes())
+                if storage_engine_ffi::get_storage_engine_server_helper()
+                    .is_storage_engine_snapshot(cf.path.to_str().unwrap().as_bytes())
                 {
                     assert_eq!(cf.cf, CF_WRITE);
                     assert!(res.is_none());
@@ -460,14 +463,15 @@ impl Snap {
             return res;
         })();
 
-        return if let Some(cf) = tiflash_snapshot {
-            let res = tiflash_ffi::get_tiflash_server_helper().pre_handle_tiflash_snapshot(
-                &region,
-                peer_id,
-                index,
-                term,
-                cf.path.to_str().unwrap().as_bytes().into(),
-            );
+        return if let Some(cf) = storage_engine_snapshot {
+            let res = storage_engine_ffi::get_storage_engine_server_helper()
+                .pre_handle_storage_engine_snapshot(
+                    &region,
+                    peer_id,
+                    index,
+                    term,
+                    cf.path.to_str().unwrap().as_bytes().into(),
+                );
             PreHandledSnapshot {
                 empty: cf.size == 0,
                 index,
@@ -476,7 +480,7 @@ impl Snap {
             }
         } else {
             let mut snapshot_helper = self.gen_snapshot_helper(region);
-            let res = tiflash_ffi::get_tiflash_server_helper().pre_handle_snapshot(
+            let res = storage_engine_ffi::get_storage_engine_server_helper().pre_handle_snapshot(
                 &region,
                 peer_id,
                 &mut snapshot_helper,
@@ -748,7 +752,7 @@ impl Snap {
         )
     }
 
-    fn validate_for_tiflash(&self) -> RaftStoreResult<()> {
+    fn validate_for_storage_engine(&self) -> RaftStoreResult<()> {
         for cf_file in &self.cf_files {
             if cf_file.size == 0 {
                 continue;
@@ -763,7 +767,6 @@ impl Snap {
         Ok(())
     }
 
-    // useless for tiflash
     fn validate(&self, engine: &impl KvEngine, for_send: bool) -> RaftStoreResult<()> {
         for cf_file in &self.cf_files {
             if cf_file.size == 0 {
@@ -836,14 +839,14 @@ impl Snap {
         }
     }
 
-    fn do_build_tiflash_snap(
+    fn do_build_storage_engine_snap(
         &mut self,
         region: &Region,
-        tiflash_snap: tiflash_ffi::RawCppPtr,
+        storage_engine_snap: storage_engine_ffi::RawCppPtr,
         stat: &mut SnapshotStatistics,
     ) -> RaftStoreResult<()> {
         if self.exists() {
-            match self.validate_for_tiflash() {
+            match self.validate_for_storage_engine() {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     error!(
@@ -873,13 +876,14 @@ impl Snap {
             let cf_file = &mut self.cf_files[self.cf_index];
             let path = cf_file.tmp_path.to_str().unwrap().as_bytes();
             let cf_stat = {
-                tiflash_ffi::get_tiflash_server_helper()
-                    .serialize_tiflash_snapshot_into(tiflash_snap.raw_ptr(), path)
+                storage_engine_ffi::get_storage_engine_server_helper()
+                    .serialize_storage_engine_snapshot_into(storage_engine_snap.raw_ptr(), path)
             };
 
             if cf_stat.ok == 0 {
                 return Err(crate::errors::Error::Other(
-                    "something wrong happened when serialize snapshot into file in tiflash".into(),
+                    "something wrong happened when serialize snapshot into file in storage engine"
+                        .into(),
                 ));
             }
 
@@ -917,7 +921,6 @@ impl Snap {
         Ok(())
     }
 
-    // useless for tiflash
     fn do_build<EK: KvEngine>(
         &mut self,
         engine: &EK,
@@ -1028,10 +1031,10 @@ where
         region: &Region,
         snap_data: &mut RaftSnapshotData,
         stat: &mut SnapshotStatistics,
-        tiflash_snap: tiflash_ffi::RawCppPtr,
+        storage_engine_snap: storage_engine_ffi::RawCppPtr,
     ) -> RaftStoreResult<()> {
         let t = Instant::now();
-        self.do_build_tiflash_snap(region, tiflash_snap, stat)?;
+        self.do_build_storage_engine_snap(region, storage_engine_snap, stat)?;
 
         let total_size = self.total_size()?;
         stat.size = total_size;
@@ -1052,8 +1055,6 @@ where
 
         Ok(())
     }
-
-    // useless for tiflash
 
     fn apply(&mut self, options: ApplyOptions<EK>) -> Result<()> {
         box_try!(self.validate(&options.db, false));
