@@ -407,7 +407,9 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
                 return Err(box_err!("missing snapshot file {}", s.path()));
             }
             check_abort(&abort)?;
-            s.apply_to_tiflash(&region, peer_id, idx, term);
+            let pre_handled_snap = s.pre_handle_snapshot(&region, peer_id, idx, term);
+            tiflash_ffi::get_tiflash_server_helper()
+                .apply_pre_handled_snapshot(pre_handled_snap.inner);
         }
 
         let mut wb = self.engines.kv.c().write_batch();

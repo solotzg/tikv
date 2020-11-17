@@ -245,7 +245,7 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver + 'static> Server<T, S> {
             )
         };
 
-        info!("TiKV is ready to serve");
+        info!("Proxy is ready to serve");
         Ok(())
     }
 

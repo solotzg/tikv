@@ -28,7 +28,6 @@ use grpcio::{
 };
 use kvproto::coprocessor::*;
 use kvproto::kvrpcpb::*;
-use kvproto::raft_cmdpb::{CmdType, RaftCmdRequest, RaftRequestHeader, Request as RaftRequest};
 use kvproto::raft_serverpb::*;
 use kvproto::tikvpb::*;
 use prometheus::HistogramTimer;
@@ -720,67 +719,14 @@ impl<T: RaftStoreRouter + 'static, E: Engine, L: LockManager> Tikv for Service<T
         if !check_common_name(self.security_mgr.cert_allowed_cn(), &ctx) {
             return;
         }
-        let timer = GRPC_MSG_HISTOGRAM_VEC.read_index.start_coarse_timer();
-
-        let region_id = req.get_context().get_region_id();
-        let mut cmd = RaftCmdRequest::default();
-        let mut header = RaftRequestHeader::default();
-        let mut inner_req = RaftRequest::default();
-        inner_req.set_cmd_type(CmdType::ReadIndex);
-        header.set_region_id(req.get_context().get_region_id());
-        header.set_peer(req.get_context().get_peer().clone());
-        header.set_region_epoch(req.get_context().get_region_epoch().clone());
-        if req.get_context().get_term() != 0 {
-            header.set_term(req.get_context().get_term());
-        }
-        header.set_sync_log(req.get_context().get_sync_log());
-        header.set_read_quorum(true);
-        cmd.set_header(header);
-        cmd.set_requests(vec![inner_req].into());
-
-        let (cb, future) = paired_future_callback();
-
-        if let Err(e) = self.ch.send_command(cmd, Callback::Read(cb)) {
-            self.send_fail_status(ctx, sink, Error::from(e), RpcStatusCode::RESOURCE_EXHAUSTED);
-            return;
-        }
-
-        let future = future
-            .map_err(Error::from)
-            .map(move |mut v| {
-                let mut resp = ReadIndexResponse::default();
-                if v.response.get_header().has_error() {
-                    resp.set_region_error(v.response.mut_header().take_error());
-                } else {
-                    let raft_resps = v.response.get_responses();
-                    if raft_resps.len() != 1 {
-                        error!(
-                            "invalid read index response";
-                            "region_id" => region_id,
-                            "response" => ?raft_resps
-                        );
-                        resp.mut_region_error().set_message(format!(
-                            "Internal Error: invalid response: {:?}",
-                            raft_resps
-                        ));
-                    } else {
-                        let read_index = raft_resps[0].get_read_index().get_read_index();
-                        resp.set_read_index(read_index);
-                    }
-                }
-                resp
-            })
-            .and_then(|res| sink.success(res).map_err(Error::from))
-            .map(|_| timer.observe_duration())
-            .map_err(move |e| {
-                debug!("kv rpc failed";
-                    "request" => "read_index",
-                    "err" => ?e
-                );
-                GRPC_MSG_FAIL_COUNTER.read_index.inc();
-            });
-
-        ctx.spawn(future);
+        self.send_fail_status(
+            ctx,
+            sink,
+            Error::RaftServer(raftstore::Error::RegionNotFound(
+                req.get_context().get_region_id(),
+            )),
+            RpcStatusCode::RESOURCE_EXHAUSTED,
+        );
     }
 
     fn batch_coprocessor(

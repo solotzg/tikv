@@ -184,6 +184,17 @@ impl<E: KvEngine> RaftRouter<E> {
         }
     }
 
+    pub fn send_raft_command_with_cb(
+        &self,
+        req: kvproto::raft_cmdpb::RaftCmdRequest,
+        cb: Callback<E>,
+    ) -> std::result::Result<(), TrySendError<RaftCommand<E>>> {
+        use txn_types::TxnExtra;
+
+        let cmd = RaftCommand::with_txn_extra(req, cb, TxnExtra::default());
+        self.send_raft_command(cmd)
+    }
+
     #[inline]
     pub fn send_raft_command(
         &self,
