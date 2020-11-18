@@ -15,6 +15,7 @@ pub struct ReadIndexClient {
 
 impl ReadIndex for ReadIndexClient {
     fn batch_read_index(&self, req_vec: Vec<ReadIndexRequest>) -> Vec<(ReadIndexResponse, u64)> {
+        debug!("batch_read_index start"; "size"=>req_vec.len(), "request"=>?req_vec);
         let mut router_cb_vec = Vec::with_capacity(req_vec.len());
         for req in &req_vec {
             let region_id = req.get_context().get_region_id();
@@ -80,6 +81,7 @@ impl ReadIndex for ReadIndexClient {
                 return read_index_res;
             }
         }
+        debug!("batch_read_index success"; "response"=>?read_index_res);
         read_index_res
     }
 }
