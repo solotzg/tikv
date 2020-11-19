@@ -543,8 +543,12 @@ impl Config {
             .set(self.snap_apply_batch_size.0 as f64);
 
         CONFIG_RAFTSTORE_GAUGE
-            .with_label_values(&["snap-handle-pool-size"])
+            .with_label_values(&["snap_handle_pool_size"])
             .set(self.snap_handle_pool_size as f64);
+
+        CONFIG_RAFTSTORE_GAUGE
+            .with_label_values(&["store_batch_retry_recv_timeout"])
+            .set(self.store_batch_retry_recv_timeout.as_millis() as f64 / 1000.0);
 
         CONFIG_RAFTSTORE_GAUGE
             .with_label_values(&["consistency_check_interval_seconds"])

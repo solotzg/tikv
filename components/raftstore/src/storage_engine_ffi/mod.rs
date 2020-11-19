@@ -6,6 +6,7 @@ use engine_traits::{
     CF_DEFAULT, CF_LOCK, CF_WRITE,
 };
 use kvproto::{metapb, raft_cmdpb};
+use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -127,7 +128,7 @@ pub extern "C" fn ffi_handle_get_file(
         (*proxy_ptr).key_manager.as_ref().map_or(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
-                let p = key_manager.get_file(std::str::from_utf8_unchecked(name.to_slice()));
+                let p = key_manager.get_file(std::str::from_utf8_unchecked(name.into()));
                 p.map_or_else(
                     |e| {
                         FileEncryptionInfoRes::error(
@@ -152,7 +153,7 @@ pub extern "C" fn ffi_handle_new_file(
         (*proxy_ptr).key_manager.as_ref().map_or(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
-                let p = key_manager.new_file(std::str::from_utf8_unchecked(name.to_slice()));
+                let p = key_manager.new_file(std::str::from_utf8_unchecked(name.into()));
                 p.map_or_else(
                     |e| {
                         FileEncryptionInfoRes::error(
@@ -177,7 +178,7 @@ pub extern "C" fn ffi_handle_delete_file(
         (*proxy_ptr).key_manager.as_ref().map_or(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
-                let p = key_manager.delete_file(std::str::from_utf8_unchecked(name.to_slice()));
+                let p = key_manager.delete_file(std::str::from_utf8_unchecked(name.into()));
                 p.map_or_else(
                     |e| {
                         FileEncryptionInfoRes::error(
@@ -205,8 +206,8 @@ pub extern "C" fn ffi_handle_link_file(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
                 let p = key_manager.link_file(
-                    std::str::from_utf8_unchecked(src.to_slice()),
-                    std::str::from_utf8_unchecked(dst.to_slice()),
+                    std::str::from_utf8_unchecked(src.into()),
+                    std::str::from_utf8_unchecked(dst.into()),
                 );
                 p.map_or_else(
                     |e| {
@@ -234,8 +235,8 @@ pub extern "C" fn ffi_handle_rename_file(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
                 let p = key_manager.rename_file(
-                    std::str::from_utf8_unchecked(src.to_slice()),
-                    std::str::from_utf8_unchecked(dst.to_slice()),
+                    std::str::from_utf8_unchecked(src.into()),
+                    std::str::from_utf8_unchecked(dst.into()),
                 );
                 p.map_or_else(
                     |e| {
@@ -489,7 +490,7 @@ pub struct BaseBuffView {
 
 impl BaseBuffView {
     pub fn to_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.data, self.len as usize) }
+        self.into()
     }
 }
 
@@ -499,6 +500,18 @@ impl From<&[u8]> for BaseBuffView {
             data: s.as_ptr(),
             len: s.len() as u64,
         }
+    }
+}
+
+impl From<&BaseBuffView> for &[u8] {
+    fn from(b: &BaseBuffView) -> Self {
+        unsafe { std::slice::from_raw_parts(b.data, b.len as usize) }
+    }
+}
+
+impl From<BaseBuffView> for &[u8] {
+    fn from(b: BaseBuffView) -> Self {
+        b.borrow().into()
     }
 }
 
@@ -530,18 +543,22 @@ impl RaftCmdHeader {
 }
 
 struct ProtoMsgBaseBuff {
-    _data: Vec<u8>,
-    buff_view: BaseBuffView,
+    data: Vec<u8>,
 }
 
 impl ProtoMsgBaseBuff {
     fn new<T: protobuf::Message>(msg: &T) -> Self {
-        let v = msg.write_to_bytes().unwrap();
-        let ptr = v.as_ptr();
-        let len = v.len() as u64;
         ProtoMsgBaseBuff {
-            _data: v,
-            buff_view: BaseBuffView { data: ptr, len },
+            data: msg.write_to_bytes().unwrap(),
+        }
+    }
+}
+
+impl From<&ProtoMsgBaseBuff> for BaseBuffView {
+    fn from(p: &ProtoMsgBaseBuff) -> Self {
+        Self {
+            data: p.data.as_ptr(),
+            len: p.data.len() as u64,
         }
     }
 }
@@ -715,7 +732,7 @@ pub fn get_storage_engine_server_helper() -> &'static StorageEngineServerHelper 
 
 #[derive(Eq, PartialEq)]
 pub enum StorageEngineStatus {
-    IDLE,
+    Idle,
     Running,
     Stopped,
 }
@@ -723,7 +740,7 @@ pub enum StorageEngineStatus {
 impl From<u8> for StorageEngineStatus {
     fn from(s: u8) -> Self {
         match s {
-            0 => StorageEngineStatus::IDLE,
+            0 => StorageEngineStatus::Idle,
             1 => StorageEngineStatus::Running,
             2 => StorageEngineStatus::Stopped,
             _ => unreachable!(),
@@ -809,9 +826,10 @@ impl StorageEngineServerHelper {
         term: u64,
         path: BaseBuffView,
     ) -> RawCppPtr {
+        let region = &ProtoMsgBaseBuff::new(region);
         (self.pre_handle_storage_engine_snapshot)(
             self.inner,
-            ProtoMsgBaseBuff::new(region).buff_view,
+            region.into(),
             peer_id,
             index,
             term,
@@ -874,12 +892,10 @@ impl StorageEngineServerHelper {
         resp: &raft_cmdpb::AdminResponse,
         header: RaftCmdHeader,
     ) -> StorageEngineApplyRes {
-        let res = (self.handle_admin_raft_cmd)(
-            self.inner,
-            ProtoMsgBaseBuff::new(req).buff_view,
-            ProtoMsgBaseBuff::new(resp).buff_view,
-            header,
-        );
+        let req = &ProtoMsgBaseBuff::new(req);
+        let resp = &ProtoMsgBaseBuff::new(resp);
+
+        let res = (self.handle_admin_raft_cmd)(self.inner, req.into(), resp.into(), header);
         res.into()
     }
 
@@ -891,9 +907,11 @@ impl StorageEngineServerHelper {
         index: u64,
         term: u64,
     ) -> RawCppPtr {
+        let region = &ProtoMsgBaseBuff::new(region);
+
         (self.pre_handle_snapshot)(
             self.inner,
-            ProtoMsgBaseBuff::new(region).buff_view,
+            region.into(),
             peer_id,
             snaps.gen_snapshot_view(),
             index,

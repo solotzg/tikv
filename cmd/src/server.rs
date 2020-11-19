@@ -122,7 +122,7 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
 
             info!("wait for storage engine server to start");
             while get_storage_engine_server_helper().handle_get_storage_engine_status()
-                == StorageEngineStatus::IDLE
+                == StorageEngineStatus::Idle
             {
                 thread::sleep(Duration::from_millis(200));
             }
@@ -654,8 +654,6 @@ impl<ER: RaftEngine> TiKVServer<ER> {
             self.concurrency_manager.clone(),
         )
         .unwrap_or_else(|e| fatal!("failed to start node: {}", e));
-
-        initial_metric(&self.config.metric);
 
         self.servers = Some(Servers {
             lock_mgr,

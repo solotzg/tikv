@@ -247,7 +247,7 @@ impl<T: RaftStoreRouter<RocksEngine> + Unpin, S: StoreAddrResolver + 'static> Se
             });
         };
 
-        info!("TiKV is ready to serve");
+        info!("Proxy is ready to serve");
         Ok(())
     }
 
