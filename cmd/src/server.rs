@@ -102,9 +102,9 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
 
     let _m = Monitor::default();
 
-    macro_rules! run_impl {
-        ($ER: ty) => {{
-            let mut tikv = TiKVServer::<$ER>::init(config);
+    {
+        {
+            let mut tikv = TiKVServer::<RocksEngine>::init(config);
             tikv.check_conflict_addr();
             tikv.init_fs();
             tikv.init_yatp();
@@ -169,14 +169,14 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
                 thread::sleep(Duration::from_millis(200));
             }
             info!("storage engine server is stopped");
-        }};
+        }
     }
 
-    if !config.raft_engine.enable {
-        run_impl!(RocksEngine)
-    } else {
-        run_impl!(RaftLogEngine)
-    }
+    // if !config.raft_engine.enable {
+    //     run_impl!(RocksEngine)
+    // } else {
+    //     run_impl!(RaftLogEngine)
+    // }
 }
 
 const RESERVED_OPEN_FDS: u64 = 1000;
