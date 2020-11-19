@@ -577,12 +577,6 @@ pub struct CppStrWithView {
     pub view: BaseBuffView,
 }
 
-impl CppStrWithView {
-    fn is_none(&self) -> bool {
-        self.inner.ptr == std::ptr::null()
-    }
-}
-
 #[repr(C)]
 pub struct RawCppPtr {
     ptr: *const u8,
@@ -612,10 +606,7 @@ impl RawCppPtr {
 impl Drop for RawCppPtr {
     fn drop(&mut self) {
         if !self.is_null() {
-            get_storage_engine_server_helper().gc_raw_cpp_ptr(RawCppPtr {
-                ptr: self.ptr,
-                tp: self.tp,
-            });
+            get_storage_engine_server_helper().gc_raw_cpp_ptr(self.ptr, self.tp);
             self.ptr = std::ptr::null();
         }
     }
@@ -690,8 +681,7 @@ pub struct StorageEngineServerHelper {
     ) -> RawCppPtr,
     apply_pre_handled_snapshot: extern "C" fn(StorageEngineServerPtr, *const u8, u32),
     handle_get_table_sync_status: extern "C" fn(StorageEngineServerPtr, u64) -> CppStrWithView,
-    gc_raw_cpp_ptr: extern "C" fn(StorageEngineServerPtr, RawCppPtr),
-
+    gc_raw_cpp_ptr: extern "C" fn(StorageEngineServerPtr, *const u8, u32),
     is_storage_engine_snapshot: extern "C" fn(StorageEngineServerPtr, BaseBuffView) -> u8,
     gen_storage_engine_snapshot: extern "C" fn(StorageEngineServerPtr, RaftCmdHeader) -> RawCppPtr,
     serialize_storage_engine_snapshot_into: extern "C" fn(
@@ -837,8 +827,8 @@ impl StorageEngineServerHelper {
         )
     }
 
-    fn gc_raw_cpp_ptr(&self, p: RawCppPtr) {
-        (self.gc_raw_cpp_ptr)(self.inner, p);
+    fn gc_raw_cpp_ptr(&self, p: *const u8, tp: u32) {
+        (self.gc_raw_cpp_ptr)(self.inner, p, tp);
     }
 
     pub fn handle_get_table_sync_status(&self, table_id: u64) -> CppStrWithView {
@@ -869,7 +859,7 @@ impl StorageEngineServerHelper {
     pub fn check(&self) {
         assert_eq!(std::mem::align_of::<Self>(), std::mem::align_of::<u64>());
         const MAGIC_NUMBER: u32 = 0x13579BDF;
-        const VERSION: u32 = 12;
+        const VERSION: u32 = 500000;
 
         if self.magic_number != MAGIC_NUMBER {
             eprintln!(
