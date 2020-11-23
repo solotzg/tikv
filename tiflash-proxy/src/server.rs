@@ -625,6 +625,8 @@ impl TiKVServer {
         )
         .unwrap_or_else(|e| fatal!("failed to start node: {}", e));
 
+        initial_metric(&self.config.metric, Some(node.id()));
+
         self.servers = Some(Servers {
             lock_mgr,
             server,
