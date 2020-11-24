@@ -43,14 +43,13 @@ use crate::store::metrics::*;
 use crate::store::msg::{Callback, PeerMsg, ReadResponse, SignificantMsg};
 use crate::store::peer::Peer;
 use crate::store::peer_storage::{self, write_initial_apply_state, write_peer_state};
-use crate::store::util::{check_region_epoch, compare_region_epoch};
-use crate::store::util::{KeysInfoFormatter, PerfContextStatistics};
+use crate::store::util::{
+    check_region_epoch, compare_region_epoch, KeysInfoFormatter, PerfContextStatistics,
+    ADMIN_CMD_EPOCH_MAP,
+};
+use crate::store::{cmd_resp, util, Config, RegionSnapshot, RegionTask};
+use crate::{observe_perf_context_type, report_perf_context, Error, Result};
 
-use crate::observe_perf_context_type;
-use crate::report_perf_context;
-
-use crate::store::{cmd_resp, util, Config, RegionSnapshot};
-use crate::{Error, Result};
 use sst_importer::SSTImporter;
 use tikv_util::config::{Tracker, VersionTrack};
 use tikv_util::mpsc::{loose_bounded, LooseBoundedSender, Receiver};
@@ -62,7 +61,6 @@ use txn_types::TxnExtra;
 
 use super::metrics::*;
 
-use super::super::RegionTask;
 use crate::tiflash_ffi::{
     gen_snap_kv_data_from_sst, get_tiflash_server_helper, RaftCmdHeader, SnapshotHelper,
     TiFlashApplyRes, WriteCmdCf, WriteCmdType, WriteCmds,
@@ -1063,9 +1061,13 @@ impl ApplyDelegate {
 
         ctx.exec_ctx = Some(self.new_ctx(index, term));
         ctx.kv_wb_mut().set_save_point();
+        let mut origin_epoch = None;
         let (resp, exec_result, flash_res) = match self.exec_raft_cmd(ctx, &req) {
             Ok(a) => {
                 ctx.kv_wb_mut().pop_save_point().unwrap();
+                if req.has_admin_request() {
+                    origin_epoch = Some(self.region.get_region_epoch().clone());
+                }
                 a
             }
             Err(e) => {
@@ -1161,6 +1163,19 @@ impl ApplyDelegate {
                     self.region = region.clone();
                     self.is_merging = false;
                 }
+            }
+        }
+        if let Some(epoch) = origin_epoch {
+            let cmd_type = req.get_admin_request().get_cmd_type();
+            let epoch_state = *ADMIN_CMD_EPOCH_MAP.get(&cmd_type).unwrap();
+            // The chenge-epoch behavior **MUST BE** equal to the settings in `ADMIN_CMD_EPOCH_MAP`
+            if (epoch_state.change_ver
+                && epoch.get_version() == self.region.get_region_epoch().get_version())
+                || (epoch_state.change_conf_ver
+                    && epoch.get_conf_ver() == self.region.get_region_epoch().get_conf_ver())
+            {
+                panic!("{} apply admin cmd {:?} but epoch change is not expected, epoch state {:?}, before {:?}, after {:?}",
+                        self.tag, req, epoch_state, epoch, self.region.get_region_epoch());
             }
         }
 
@@ -2067,6 +2082,7 @@ impl ApplyDelegate {
         req: &AdminRequest,
     ) -> Result<(AdminResponse, ApplyResult)> {
         {
+            fail_point!("apply_before_commit_merge");
             let apply_before_commit_merge = || {
                 fail_point!(
                     "apply_before_commit_merge_except_1_4",
@@ -2204,6 +2220,8 @@ impl ApplyDelegate {
         ctx: &mut ApplyContext<W>,
         req: &AdminRequest,
     ) -> Result<(AdminResponse, ApplyResult)> {
+        fail_point!("apply_before_rollback_merge");
+
         PEER_ADMIN_CMD_COUNTER_VEC
             .with_label_values(&["rollback_merge", "all"])
             .inc();
@@ -3654,7 +3672,7 @@ mod tests {
             false,
             1,
             0,
-            Callback::Write(Box::new(move |resp: WriteResponse| {
+            Callback::write(Box::new(move |resp: WriteResponse| {
                 resp_tx.send(resp.response).unwrap();
             })),
             TxnExtra::default(),
@@ -3673,7 +3691,7 @@ mod tests {
                 true,
                 3,
                 0,
-                Callback::Write(Box::new(move |write: WriteResponse| {
+                Callback::write(Box::new(move |write: WriteResponse| {
                     cc_tx.send(write.response).unwrap();
                 })),
                 TxnExtra::default(),
@@ -3785,7 +3803,7 @@ mod tests {
             false,
             1,
             0,
-            Callback::Write(Box::new(move |resp: WriteResponse| {
+            Callback::write(Box::new(move |resp: WriteResponse| {
                 resp_tx.send(resp.response).unwrap();
             })),
             TxnExtra::default(),
@@ -3825,7 +3843,7 @@ mod tests {
             region_id: u64,
             tx: Sender<RaftCmdResponse>,
         ) -> EntryBuilder {
-            let cb = Callback::Write(Box::new(move |resp: WriteResponse| {
+            let cb = Callback::write(Box::new(move |resp: WriteResponse| {
                 tx.send(resp.response).unwrap();
             }));
             self.capture_resp_with_cb(router, id, region_id, cb)
@@ -4199,7 +4217,7 @@ mod tests {
                 &router,
                 3,
                 1,
-                Callback::Write(Box::new(move |resp: WriteResponse| {
+                Callback::write(Box::new(move |resp: WriteResponse| {
                     // Sleep until yield timeout.
                     thread::sleep(Duration::from_millis(500));
                     capture_tx_clone.send(resp.response).unwrap();

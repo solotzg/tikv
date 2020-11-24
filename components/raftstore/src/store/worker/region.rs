@@ -334,7 +334,7 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
 
     fn get_region_state(&self, region_id: u64) -> Result<(RegionLocalState, [u8; 11])> {
         let region_key = keys::region_state_key(region_id);
-        let mut region_state: RegionLocalState =
+        let region_state: RegionLocalState =
             match box_try!(self.engine.get_msg_cf(CF_RAFT, &region_key)) {
                 Some(state) => state,
                 None => {
