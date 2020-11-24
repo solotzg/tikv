@@ -1253,11 +1253,10 @@ impl RaftBatchSystem {
             .spawn("apply".to_owned(), apply_poller_builder);
 
         let region_runner = RegionRunner::new(
-            engines.clone(),
+            engines.kv.c().clone(),
             snap_mgr,
             cfg.snap_handle_pool_size,
             cfg.use_delete_range,
-            cfg.clean_stale_peer_delay.0,
             workers.coprocessor_host.clone(),
             self.router(),
         );
