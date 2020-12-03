@@ -454,6 +454,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmd"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "clap",
+ "encryption",
+ "engine",
+ "engine_rocks",
+ "engine_traits",
+ "error_code",
+ "fs2",
+ "futures 0.1.29",
+ "futures-cpupool",
+ "grpcio",
+ "hex 0.4.2",
+ "keys",
+ "kvproto",
+ "libc",
+ "log",
+ "log_wrappers",
+ "nix 0.11.1",
+ "pd_client",
+ "prometheus",
+ "promptly",
+ "protobuf",
+ "raft",
+ "raftstore",
+ "rand 0.7.3",
+ "security",
+ "serde_json",
+ "slog",
+ "slog-global",
+ "tikv",
+ "tikv_util",
+ "toml",
+ "txn_types",
+ "vlog",
+ "yatp",
+]
+
+[[package]]
 name = "coarsetime"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4238,41 +4279,9 @@ dependencies = [
 name = "tiflash-proxy"
 version = "0.0.1"
 dependencies = [
- "chrono",
- "clap",
- "encryption",
+ "cmd",
  "engine",
  "engine_rocks",
- "engine_traits",
- "error_code",
- "fs2",
- "futures 0.1.29",
- "futures-cpupool",
- "grpcio",
- "hex 0.4.2",
- "keys",
- "kvproto",
- "libc",
- "log",
- "log_wrappers",
- "nix 0.11.1",
- "pd_client",
- "prometheus",
- "promptly",
- "protobuf",
- "raft",
- "raftstore",
- "rand 0.7.3",
- "security",
- "serde_json",
- "slog",
- "slog-global",
- "tikv",
- "tikv_util",
- "toml",
- "txn_types",
- "vlog",
- "yatp",
 ]
 
 [[package]]

@@ -116,9 +116,12 @@ all: format build test error-code
 dev: format clippy
 	@env FAIL_POINT=1 make test
 
-build: export PROXY_PROFILE=debug
+build_by_type:
+	@echo profile is ${PROXY_PROFILE}
+	cargo build --no-default-features --features "${ENABLE_FEATURES}" --${BUILD_TYPE}
+
 build:
-	cargo build --no-default-features --features "${ENABLE_FEATURES}"
+	@export PROXY_PROFILE=debug; make build_by_type
 
 ## Release builds (optimized dev builds)
 ## ----------------------------
@@ -130,9 +133,8 @@ build:
 # with RocksDB compiled with the "portable" option, for -march=x86-64 (an
 # sse2-level instruction set), but with sse4.2 and the PCLMUL instruction
 # enabled (the "sse" option)
-release: export PROXY_PROFILE=release
 release:
-	cargo build --release --no-default-features --features "${ENABLE_FEATURES}"
+	./release.sh
 
 # An optimized build that builds an "unportable" RocksDB, which means it is
 # built with -march native. It again includes the "sse" option by default.
