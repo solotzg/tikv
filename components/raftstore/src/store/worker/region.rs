@@ -749,6 +749,7 @@ where
                 start_key,
                 end_key,
             } => {
+                fail_point!("on_region_worker_destroy", true, |_| {});
                 // try to delay the range deletion because
                 // there might be a coprocessor request related to this range
                 self.ctx

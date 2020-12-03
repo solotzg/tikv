@@ -953,6 +953,7 @@ dependencies = [
  "crossbeam",
  "engine_traits",
  "error_code",
+ "fail 0.4.0",
  "failure",
  "futures 0.3.7",
  "futures-util",
@@ -1776,7 +1777,7 @@ dependencies = [
 [[package]]
 name = "kvproto"
 version = "0.0.2"
-source = "git+https://github.com/pingcap/kvproto.git?branch=release-4.0#cc13a62c987038db6f38a0fc854c54c7fba6d2d3"
+source = "git+https://github.com/pingcap/kvproto.git?branch=release-4.0#0e3ce33f29b8be60d24610eb1c4695114de367ca"
 dependencies = [
  "futures 0.1.29",
  "grpcio",
@@ -1831,7 +1832,7 @@ dependencies = [
 [[package]]
 name = "librocksdb_sys"
 version = "0.1.0"
-source = "git+https://github.com/tikv/rust-rocksdb.git?branch=tikv-4.x#6d8620d13c83b6388ac4d6fe629d43f94612372e"
+source = "git+https://github.com/tikv/rust-rocksdb.git?branch=tikv-4.x#84369a7eee61422c476fe43835a53dae9490a39b"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -1850,7 +1851,7 @@ dependencies = [
 [[package]]
 name = "libtitan_sys"
 version = "0.0.1"
-source = "git+https://github.com/tikv/rust-rocksdb.git?branch=tikv-4.x#6d8620d13c83b6388ac4d6fe629d43f94612372e"
+source = "git+https://github.com/tikv/rust-rocksdb.git?branch=tikv-4.x#84369a7eee61422c476fe43835a53dae9490a39b"
 dependencies = [
  "bzip2-sys",
  "cc",
@@ -3300,7 +3301,7 @@ checksum = "cabe4fa914dec5870285fa7f71f602645da47c486e68486d2b4ceb4a343e90ac"
 [[package]]
 name = "rocksdb"
 version = "0.3.0"
-source = "git+https://github.com/tikv/rust-rocksdb.git?branch=tikv-4.x#6d8620d13c83b6388ac4d6fe629d43f94612372e"
+source = "git+https://github.com/tikv/rust-rocksdb.git?branch=tikv-4.x#84369a7eee61422c476fe43835a53dae9490a39b"
 dependencies = [
  "libc",
  "librocksdb_sys",
@@ -4269,6 +4270,7 @@ name = "tidb_query_datatype"
 version = "0.0.1"
 dependencies = [
  "bitflags",
+ "bstr",
  "error_code",
  "failure",
  "tikv_alloc",
