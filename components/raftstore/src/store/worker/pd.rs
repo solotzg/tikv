@@ -664,12 +664,10 @@ where
         stats.set_used_size(store_stats.fs_stats.used_size);
         stats.set_capacity(capacity);
         stats.set_available(available);
-        // report `bytes_written`, `keys_written`, `bytes_read`, `keys_read` to PD
         stats.set_bytes_written(store_stats.engine_bytes_written);
         stats.set_keys_written(store_stats.engine_keys_written);
         stats.set_bytes_read(store_stats.engine_bytes_read);
-        stats.set_bytes_read(store_stats.engine_keys_read);
-
+        stats.set_keys_read(store_stats.engine_keys_read);
 
         let mut interval = pdpb::TimeInterval::default();
         interval.set_start_timestamp(self.store_stat.last_report_ts.into_inner());
