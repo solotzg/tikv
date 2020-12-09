@@ -616,6 +616,10 @@ impl<T: PdClient> Runner<T> {
         stats.set_available(available);
 
         // TODO: report `bytes_written`, `keys_written`, `bytes_read`, `keys_read` to PD
+        stats.clear_bytes_written();
+        stats.clear_keys_written();
+        stats.clear_bytes_read();
+        stats.clear_keys_read();
 
         let mut interval = pdpb::TimeInterval::default();
         interval.set_start_timestamp(self.store_stat.last_report_ts.into_inner());
