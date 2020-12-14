@@ -13,6 +13,7 @@ publish = false
 
 [features]
 default = ["protobuf-codec"]
+openssl-vendor = ["grpcio/openssl-vendored"]
 tcmalloc = ["tikv_alloc/tcmalloc"]
 jemalloc = ["tikv_alloc/jemalloc", "engine/jemalloc", "engine_rocks/jemalloc"]
 mimalloc = ["tikv_alloc/mimalloc"]
@@ -89,7 +90,7 @@ futures03 = { package = "futures", version = "0.3.1", features = ["compat"] }
 futures-cpupool = "0.1"
 futures-executor = "0.3.1"
 futures-util = { version = "0.3.1", default-features = false, features = ["io", "async-await"] }
-grpcio = { version = "0.5", default-features = false, features = ["openssl-vendored"] }
+grpcio = { version = "0.5"}
 hex = "0.4"
 hyper-tls = "0.4"
 itertools = "0.8"
