@@ -397,7 +397,7 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(rate(tikv_thread_cpu_seconds_total{instance=~\"$instance\"}[1m])) by (instance)",
+              "expr": "sum(rate(process_cpu_seconds_total{instance=~\"$instance\"}[1m])) by (instance)",
               "format": "time_series",
               "intervalFactor": 2,
               "legendFormat": "{{instance}}",
@@ -550,11 +550,11 @@
           "dashLength": 10,
           "dashes": false,
           "datasource": "${DS_TEST-CLUSTER}",
-          "decimals": 1,
-          "description": " \tThe I/O utilization per TiKV instance",
+          "decimals": null,
+          "description": "TiKV uptime since the last restart",
           "editable": true,
           "error": false,
-          "fill": 0,
+          "fill": 1,
           "grid": {},
           "gridPos": {
             "h": 8,
@@ -562,109 +562,12 @@
             "x": 0,
             "y": 17
           },
-          "id": 1710,
+          "id": 4106,
           "legend": {
             "alignAsTable": true,
             "avg": false,
             "current": true,
-            "max": true,
-            "min": false,
-            "rightSide": true,
-            "show": true,
-            "sideWidth": 250,
-            "sort": "max",
-            "sortDesc": true,
-            "total": false,
-            "values": true
-          },
-          "lines": true,
-          "linewidth": 1,
-          "links": [],
-          "nullPointMode": "null",
-          "percentage": false,
-          "pointradius": 5,
-          "points": false,
-          "renderer": "flot",
-          "seriesOverrides": [],
-          "spaceLength": 10,
-          "stack": false,
-          "steppedLine": false,
-          "targets": [
-            {
-              "expr": "rate(node_disk_io_time_seconds_total[1m])",
-              "format": "time_series",
-              "intervalFactor": 2,
-              "legendFormat": "{{instance}} - {{device}}",
-              "refId": "A",
-              "step": 10
-            }
-          ],
-          "thresholds": [],
-          "timeFrom": null,
-          "timeRegions": [],
-          "timeShift": null,
-          "title": "IO utilization",
-          "tooltip": {
-            "msResolution": false,
-            "shared": true,
-            "sort": 0,
-            "value_type": "individual"
-          },
-          "type": "graph",
-          "xaxis": {
-            "buckets": null,
-            "mode": "time",
-            "name": null,
-            "show": true,
-            "values": []
-          },
-          "yaxes": [
-            {
-              "format": "percentunit",
-              "label": null,
-              "logBase": 1,
-              "max": null,
-              "min": "0",
-              "show": true
-            },
-            {
-              "format": "short",
-              "label": null,
-              "logBase": 1,
-              "max": null,
-              "min": null,
-              "show": true
-            }
-          ],
-          "yaxis": {
-            "align": false,
-            "alignLevel": null
-          }
-        },
-        {
-          "aliasColors": {},
-          "bars": false,
-          "dashLength": 10,
-          "dashes": false,
-          "datasource": "${DS_TEST-CLUSTER}",
-          "decimals": 1,
-          "description": "The total bytes of read and write in each TiKV instance",
-          "editable": true,
-          "error": false,
-          "fill": 0,
-          "grid": {},
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 17
-          },
-          "id": 1711,
-          "legend": {
-            "alignAsTable": true,
-            "avg": false,
-            "current": true,
-            "max": true,
+            "max": false,
             "min": false,
             "rightSide": true,
             "show": true,
@@ -677,7 +580,7 @@
           "lines": true,
           "linewidth": 1,
           "links": [],
-          "nullPointMode": "null",
+          "nullPointMode": "null as zero",
           "percentage": false,
           "pointradius": 5,
           "points": false,
@@ -688,33 +591,24 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(rate(tikv_engine_flow_bytes{instance=~\"$instance\", db=\"kv\", type=\"wal_file_bytes\"}[1m])) by (instance)",
+              "expr": "(time() - process_start_time_seconds{job=\"tikv\"})",
               "format": "time_series",
-              "hide": false,
               "intervalFactor": 2,
-              "legendFormat": "{{instance}}-write",
+              "legendFormat": "{{instance}}",
               "refId": "A",
               "step": 10
-            },
-            {
-              "expr": "sum(rate(tikv_engine_flow_bytes{instance=~\"$instance\", db=\"kv\", type=~\"bytes_read|iter_bytes_read\"}[1m])) by (instance)",
-              "format": "time_series",
-              "hide": false,
-              "intervalFactor": 2,
-              "legendFormat": "{{instance}}-read",
-              "refId": "B"
             }
           ],
           "thresholds": [],
           "timeFrom": null,
           "timeRegions": [],
           "timeShift": null,
-          "title": "MBps",
+          "title": "Uptime",
           "tooltip": {
             "msResolution": false,
             "shared": true,
             "sort": 0,
-            "value_type": "individual"
+            "value_type": "cumulative"
           },
           "type": "graph",
           "xaxis": {
@@ -726,8 +620,8 @@
           },
           "yaxes": [
             {
-              "format": "Bps",
-              "label": null,
+              "format": "dtdurations",
+              "label": "",
               "logBase": 1,
               "max": null,
               "min": "0",
@@ -854,7 +748,7 @@
           "dashes": false,
           "datasource": "${DS_TEST-CLUSTER}",
           "decimals": 1,
-          "description": "The total number of the gRPC message failures",
+          "description": "The number of leaders per TiKV instance",
           "editable": true,
           "error": false,
           "fill": 0,
@@ -864,120 +758,6 @@
             "w": 12,
             "x": 12,
             "y": 25
-          },
-          "id": 1712,
-          "legend": {
-            "alignAsTable": true,
-            "avg": false,
-            "current": true,
-            "hideEmpty": true,
-            "hideZero": true,
-            "max": true,
-            "min": false,
-            "rightSide": true,
-            "show": true,
-            "sideWidth": null,
-            "sort": "current",
-            "sortDesc": true,
-            "total": false,
-            "values": true
-          },
-          "lines": true,
-          "linewidth": 1,
-          "links": [],
-          "nullPointMode": "null",
-          "percentage": false,
-          "pointradius": 5,
-          "points": false,
-          "renderer": "flot",
-          "seriesOverrides": [],
-          "spaceLength": 10,
-          "stack": false,
-          "steppedLine": false,
-          "targets": [
-            {
-              "expr": "sum(rate(tikv_grpc_msg_fail_total{instance=~\"$instance\", type!=\"kv_gc\"}[1m])) by (instance)",
-              "format": "time_series",
-              "hide": false,
-              "intervalFactor": 2,
-              "legendFormat": "{{instance}}-grpc-msg-fail",
-              "refId": "A",
-              "step": 10
-            },
-            {
-              "expr": "sum(delta(tikv_pd_heartbeat_message_total{instance=~\"$instance\", type=\"noop\"}[1m])) by (instance) < 1",
-              "format": "time_series",
-              "intervalFactor": 2,
-              "legendFormat": "{{instance}}-pd-heartbeat",
-              "refId": "B"
-            },
-            {
-              "expr": "sum(rate(tikv_critical_error_total{instance=~\"$instance\"}[1m])) by (instance, type)",
-              "format": "time_series",
-              "intervalFactor": 2,
-              "legendFormat": "{{instance}}-{{type}}",
-              "refId": "C"
-            }
-          ],
-          "thresholds": [],
-          "timeFrom": null,
-          "timeRegions": [],
-          "timeShift": null,
-          "title": "Errps",
-          "tooltip": {
-            "msResolution": false,
-            "shared": true,
-            "sort": 0,
-            "value_type": "individual"
-          },
-          "type": "graph",
-          "xaxis": {
-            "buckets": null,
-            "mode": "time",
-            "name": null,
-            "show": true,
-            "values": []
-          },
-          "yaxes": [
-            {
-              "format": "ops",
-              "label": null,
-              "logBase": 1,
-              "max": null,
-              "min": "0",
-              "show": true
-            },
-            {
-              "format": "short",
-              "label": null,
-              "logBase": 1,
-              "max": null,
-              "min": null,
-              "show": true
-            }
-          ],
-          "yaxis": {
-            "align": false,
-            "alignLevel": null
-          }
-        },
-        {
-          "aliasColors": {},
-          "bars": false,
-          "dashLength": 10,
-          "dashes": false,
-          "datasource": "${DS_TEST-CLUSTER}",
-          "decimals": 1,
-          "description": "The number of leaders per TiKV instance",
-          "editable": true,
-          "error": false,
-          "fill": 0,
-          "grid": {},
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 0,
-            "y": 33
           },
           "id": 1715,
           "legend": {
@@ -2224,7 +2004,7 @@
             "min": false,
             "rightSide": true,
             "show": true,
-            "sideWidth": 250,
+            "sideWidth": 280,
             "total": false,
             "values": true
           },
@@ -2242,10 +2022,10 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(tikv_engine_size_bytes{instance=~\"$instance\"}) by (type)",
+              "expr": "sum(tikv_engine_size_bytes{instance=~\"$instance\"}) by (type, db)",
               "format": "time_series",
               "intervalFactor": 2,
-              "legendFormat": "{{type}}",
+              "legendFormat": "{{type}}-{{db}}",
               "refId": "A",
               "step": 10
             }
@@ -4878,7 +4658,7 @@
     ]
   },
   "timezone": "browser",
-  "title": "Test-Cluster-TiKV-Summary",
-  "uid": "X7VQmEzZk",
+  "title": "Test-Cluster-RaftStoreProxyDemo-Summary",
+  "uid": "X7VQmEzZz",
   "version": 5
 }

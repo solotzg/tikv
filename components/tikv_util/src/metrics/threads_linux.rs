@@ -47,7 +47,7 @@ impl ThreadsCollector {
                  seconds by threads.",
             )
             .namespace(ns.clone()),
-            &["name", "tid"],
+            &["name"],
         )
         .unwrap();
         descs.extend(cpu_totals.desc().into_iter().cloned());
@@ -62,7 +62,7 @@ impl ThreadsCollector {
                 "threads_io_bytes_total",
                 "Total number of bytes which threads cause to be fetched from or sent to the storage layer.",
             ).namespace(ns.clone()),
-            &["name", "tid", "io"],
+            &["name", "io"],
         )
         .unwrap();
         descs.extend(io_totals.desc().into_iter().cloned());
@@ -72,7 +72,7 @@ impl ThreadsCollector {
                 "Number of thread voluntary context switches.",
             )
             .namespace(ns.clone()),
-            &["name", "tid"],
+            &["name"],
         )
         .unwrap();
         let nonvoluntary_ctxt_switches = IntCounterVec::new(
@@ -81,7 +81,7 @@ impl ThreadsCollector {
                 "Number of thread nonvoluntary context switches.",
             )
             .namespace(ns),
-            &["name", "tid"],
+            &["name"],
         )
         .unwrap();
 
@@ -122,7 +122,7 @@ impl Collector for ThreadsCollector {
                 let name = sanitize_thread_name(tid, &stat.command);
                 let cpu_total = metrics
                     .cpu_totals
-                    .get_metric_with_label_values(&[&name, &format!("{}", tid)])
+                    .get_metric_with_label_values(&[&name])
                     .unwrap();
                 let past = cpu_total.get();
                 let delta = total - past;
@@ -143,7 +143,7 @@ impl Collector for ThreadsCollector {
                     // Threads IO.
                     let read_total = metrics
                         .io_totals
-                        .get_metric_with_label_values(&[&name, &format!("{}", tid), "read"])
+                        .get_metric_with_label_values(&[&name, "read"])
                         .unwrap();
                     let read_past = read_total.get();
                     let read_delta = read_bytes as f64 - read_past;
@@ -153,7 +153,7 @@ impl Collector for ThreadsCollector {
 
                     let write_total = metrics
                         .io_totals
-                        .get_metric_with_label_values(&[&name, &format!("{}", tid), "write"])
+                        .get_metric_with_label_values(&[&name, "write"])
                         .unwrap();
                     let write_past = write_total.get();
                     let write_delta = write_bytes as f64 - write_past;
@@ -167,7 +167,7 @@ impl Collector for ThreadsCollector {
                     let voluntary_ctxt_switches = status.voluntary_ctxt_switches;
                     let voluntary_total = metrics
                         .voluntary_ctxt_switches
-                        .get_metric_with_label_values(&[&name, &format!("{}", tid)])
+                        .get_metric_with_label_values(&[&name])
                         .unwrap();
                     let voluntary_past = voluntary_total.get();
                     let voluntary_delta = voluntary_ctxt_switches as i64 - voluntary_past;
@@ -179,7 +179,7 @@ impl Collector for ThreadsCollector {
                     let nonvoluntary_ctxt_switches = status.nonvoluntary_ctxt_switches;
                     let nonvoluntary_total = metrics
                         .nonvoluntary_ctxt_switches
-                        .get_metric_with_label_values(&[&name, &format!("{}", tid)])
+                        .get_metric_with_label_values(&[&name])
                         .unwrap();
                     let nonvoluntary_past = nonvoluntary_total.get();
                     let nonvoluntary_delta = nonvoluntary_ctxt_switches as i64 - nonvoluntary_past;
@@ -304,30 +304,25 @@ fn get_name(command: &str) -> String {
     String::from("anony")
 }
 
-fn collect_metrics_by_name(
-    names: &HashMap<i32, String>,
-    values: &HashMap<i32, f64>,
-) -> HashMap<String, u64> {
+fn collect_metrics_by_name(values: &HashMap<String, f64>) -> HashMap<String, u64> {
     let mut new_map: HashMap<String, u64> = HashMap::default();
-    for (tid, name) in names {
+    for (name, value) in values {
         let new_value = new_map.entry(name.to_string()).or_insert(0);
-        if let Some(value) = values.get(&tid) {
-            *new_value += *value as u64;
-        }
+        *new_value += *value as u64;
     }
     new_map
 }
 
 #[inline]
 fn update_metric(
-    metrics: &mut HashMap<i32, f64>,
-    rates: &mut HashMap<i32, f64>,
-    tid: i32,
+    metrics: &mut HashMap<String, f64>,
+    rates: &mut HashMap<String, f64>,
+    name: &String,
     metric_new: f64,
     time_delta: f64,
 ) {
-    let metric_old = metrics.entry(tid).or_insert(0.0);
-    let rate = rates.entry(tid).or_insert(0.0);
+    let metric_old = metrics.entry(name.clone()).or_insert(0.0);
+    let rate = rates.entry(name.clone()).or_insert(0.0);
 
     let metric_delta = metric_new - *metric_old;
     if metric_delta > 0.0 && time_delta > 0.0 {
@@ -338,9 +333,9 @@ fn update_metric(
 
 #[derive(Default)]
 struct ThreadMetrics {
-    cpu_times: HashMap<i32, f64>,
-    read_ios: HashMap<i32, f64>,
-    write_ios: HashMap<i32, f64>,
+    cpu_times: HashMap<String, f64>,
+    read_ios: HashMap<String, f64>,
+    write_ios: HashMap<String, f64>,
 }
 
 impl ThreadMetrics {
@@ -355,7 +350,6 @@ impl ThreadMetrics {
 pub struct ThreadInfoStatistics {
     pid: pid_t,
     last_instant: Instant,
-    tid_names: HashMap<i32, String>,
     tid_retriever: TidRetriever,
     metrics_rate: ThreadMetrics,
     metrics_total: ThreadMetrics,
@@ -368,7 +362,6 @@ impl ThreadInfoStatistics {
         let mut thread_stats = Self {
             pid,
             last_instant: Instant::now(),
-            tid_names: HashMap::default(),
             tid_retriever: TidRetriever::new(pid),
             metrics_rate: ThreadMetrics::default(),
             metrics_total: ThreadMetrics::default(),
@@ -391,13 +384,12 @@ impl ThreadInfoStatistics {
 
             if let Ok(stat) = pid::stat_task(self.pid, tid) {
                 let name = get_name(&stat.command);
-                self.tid_names.entry(tid).or_insert(name);
 
                 let cpu_time = cpu_total(&stat) * 100.0;
                 update_metric(
                     &mut self.metrics_total.cpu_times,
                     &mut self.metrics_rate.cpu_times,
-                    tid,
+                    &name,
                     cpu_time,
                     time_delta,
                 );
@@ -410,7 +402,7 @@ impl ThreadInfoStatistics {
                     update_metric(
                         &mut self.metrics_total.read_ios,
                         &mut self.metrics_rate.read_ios,
-                        tid,
+                        &name,
                         read_bytes as f64,
                         time_delta,
                     );
@@ -418,7 +410,7 @@ impl ThreadInfoStatistics {
                     update_metric(
                         &mut self.metrics_total.write_ios,
                         &mut self.metrics_rate.write_ios,
-                        tid,
+                        &name,
                         write_bytes as f64,
                         time_delta,
                     );
@@ -428,15 +420,15 @@ impl ThreadInfoStatistics {
     }
 
     pub fn get_cpu_usages(&self) -> HashMap<String, u64> {
-        collect_metrics_by_name(&self.tid_names, &self.metrics_rate.cpu_times)
+        collect_metrics_by_name(&self.metrics_rate.cpu_times)
     }
 
     pub fn get_read_io_rates(&self) -> HashMap<String, u64> {
-        collect_metrics_by_name(&self.tid_names, &self.metrics_rate.read_ios)
+        collect_metrics_by_name(&self.metrics_rate.read_ios)
     }
 
     pub fn get_write_io_rates(&self) -> HashMap<String, u64> {
-        collect_metrics_by_name(&self.tid_names, &self.metrics_rate.write_ios)
+        collect_metrics_by_name(&self.metrics_rate.write_ios)
     }
 }
 
@@ -480,6 +472,18 @@ impl TidRetriever {
 
         &self.tid_buffer
     }
+}
+
+pub fn dump_thread_stats() -> String {
+    let pid = unsafe { libc::getpid() };
+    let tids = get_thread_ids(pid).unwrap();
+    let mut res: Vec<pid::Stat> = Default::default();
+    for tid in tids {
+        if let Ok(stat) = pid::stat_task(pid, tid) {
+            res.push(stat);
+        }
+    }
+    format!("total count {}\n{:#?}", res.len(), res).into()
 }
 
 #[cfg(test)]

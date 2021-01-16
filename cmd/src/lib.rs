@@ -14,15 +14,13 @@ mod server;
 fn proxy_version_info() -> String {
     let fallback = "Unknown (env var does not exist when building)";
     format!(
-        "Git Commit Hash:   {}\
-         \nGit Commit Branch: {}\
+        "Proxy Commit Hash: {}\
          \nUTC Build Time:    {}\
          \nRust Version:      {}\
          \nStorage Engine:    {}\
          \nPrometheus Prefix: {}\
          \nProfile:           {}",
         option_env!("PROXY_BUILD_GIT_HASH").unwrap_or(fallback),
-        option_env!("PROXY_BUILD_GIT_BRANCH").unwrap_or(fallback),
         option_env!("PROXY_BUILD_TIME").unwrap_or(fallback),
         option_env!("PROXY_BUILD_RUSTC_VERSION").unwrap_or(fallback),
         option_env!("ENGINE_LABEL_VALUE").unwrap_or(fallback),

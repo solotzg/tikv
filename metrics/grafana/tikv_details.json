@@ -8550,7 +8550,7 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(rate(tikv_raftstore_admin_cmd_total{instance=~\"$instance\", status=\"success\", type!=\"compact\"}[1m]))  by (type)",
+              "expr": "sum(rate(tikv_raftstore_admin_cmd_total{instance=~\"$instance\", status=\"success\"}[1m]))  by (type)",
               "format": "time_series",
               "intervalFactor": 2,
               "legendFormat": "{{type}}",
@@ -25016,7 +25016,7 @@
     ]
   },
   "timezone": "browser",
-  "title": "Test-Cluster-TiKV-Details",
-  "uid": "RDVQiEzZz",
+  "title": "Test-Cluster-RaftStoreProxyDemo-Details",
+  "uid": "RDVQiEzZZ",
   "version": 23
 }

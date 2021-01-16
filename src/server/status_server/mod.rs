@@ -197,6 +197,12 @@ where
         Ok(buf)
     }
 
+    pub async fn thread_stats(_req: Request<Body>) -> hyper::Result<Response<Body>> {
+        Ok(Response::new(
+            tikv_util::metrics::dump_thread_stats().into(),
+        ))
+    }
+
     pub async fn dump_prof_to_resp(req: Request<Body>) -> hyper::Result<Response<Body>> {
         let query = match req.uri().query() {
             Some(query) => query,
@@ -720,6 +726,7 @@ where
                             (Method::GET, path) if path.starts_with("/region") => {
                                 Self::dump_region_meta(req, router).await
                             }
+                            (Method::GET, "/thread_stats") => Self::thread_stats(req).await,
                             _ => Ok(StatusServer::err_response(
                                 StatusCode::NOT_FOUND,
                                 "path not found",

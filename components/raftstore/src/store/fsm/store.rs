@@ -892,10 +892,10 @@ impl<EK: KvEngine, ER: RaftEngine, T: Transport, C: PdClient>
         }
     }
 
-    fn batch_retry_recv_timeout(&self) -> Option<Duration> {
-        self.batch_retry_recv_timeout
-            .checked_sub(self.last_sync_time.elapsed())
-    }
+    // fn batch_retry_recv_timeout(&self) -> Option<Duration> {
+    //     self.batch_retry_recv_timeout
+    //         .checked_sub(self.last_sync_time.elapsed())
+    // }
 }
 
 pub struct RaftPollerBuilder<EK: KvEngine, ER: RaftEngine, T, C> {
@@ -1303,8 +1303,7 @@ impl<EK: KvEngine, ER: RaftEngine> RaftBatchSystem<EK, ER> {
                 .broadcast_normal(|| PeerMsg::HeartbeatPd);
         });
 
-        let tag = format!("raftstore-{}", store.get_id());
-        self.system.spawn(tag, builder);
+        self.system.spawn("raftstore".into(), builder);
         let mut mailboxes = Vec::with_capacity(region_peers.len());
         let mut address = Vec::with_capacity(region_peers.len());
         for (tx, fsm) in region_peers {

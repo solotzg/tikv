@@ -413,7 +413,7 @@ where
             assert_eq!(idx, snap.index);
             assert_eq!(term, snap.term);
             storage_engine_ffi::get_storage_engine_server_helper()
-                .apply_pre_handled_snapshot(snap.inner.raw_ptr(), snap.inner.get_type());
+                .apply_pre_handled_snapshot(snap.inner);
         } else {
             info!(
                 "apply data to storage engine";
@@ -425,10 +425,8 @@ where
             }
             check_abort(&abort)?;
             let pre_handled_snap = s.pre_handle_snapshot(&region, peer_id, idx, term);
-            storage_engine_ffi::get_storage_engine_server_helper().apply_pre_handled_snapshot(
-                pre_handled_snap.inner.raw_ptr(),
-                pre_handled_snap.inner.get_type(),
-            );
+            storage_engine_ffi::get_storage_engine_server_helper()
+                .apply_pre_handled_snapshot(pre_handled_snap.inner);
         }
 
         let mut wb = self.engines.kv.write_batch();
@@ -672,7 +670,7 @@ where
         info!("create region runner"; "pool_size" => pool_size, "opt_pre_handle_snap" => opt_pre_handle_snap);
 
         Runner {
-            pool: Builder::new(thd_name!("snap-handle-pool"))
+            pool: Builder::new(thd_name!("region-task"))
                 .max_thread_count(pool_size)
                 .build_future_pool(),
             ctx: SnapContext {

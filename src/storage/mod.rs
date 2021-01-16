@@ -68,7 +68,7 @@ use crate::storage::{
     types::StorageCallbackType,
 };
 use concurrency_manager::ConcurrencyManager;
-use engine_traits::{CfName, ALL_CFS, CF_DEFAULT, CF_WRITE, DATA_CFS};
+use engine_traits::{CfName, ALL_CFS, CF_DEFAULT, DATA_CFS};
 use engine_traits::{IterOptions, DATA_KEY_PREFIX_LEN};
 use futures::prelude::*;
 use kvproto::kvrpcpb::{
@@ -83,7 +83,7 @@ use std::{
 };
 use tikv_util::time::Instant;
 use tikv_util::time::ThreadReadId;
-use txn_types::{self, Key, KvPair, Lock, Mutation, TimeStamp, TsSet, Value, WriteType};
+use txn_types::{Key, KvPair, Lock, TimeStamp, TsSet, Value};
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type Callback<T> = Box<dyn FnOnce(Result<T>) + Send>;
@@ -664,59 +664,6 @@ impl<E: Engine, L: LockManager> Storage<E, L> {
             res.map_err(|_| Error::from(ErrorInner::SchedTooBusy))
                 .await?
         }
-    }
-
-    pub fn write(
-        &self,
-        ctx: Context,
-        mutations: Vec<Mutation>,
-        version: TimeStamp,
-        callback: Callback<()>,
-    ) -> Result<()> {
-        check_key_size!(
-            mutations.iter().map(|m| m.key().as_encoded()),
-            self.max_key_size,
-            callback
-        );
-        let mut modifies = vec![];
-        for m in mutations {
-            match m {
-                Mutation::Put((key, value)) => {
-                    let short_value = if txn_types::is_short_value(&value) {
-                        Some(value)
-                    } else {
-                        modifies.push(Modify::Put(
-                            CF_DEFAULT,
-                            key.clone().append_ts(version),
-                            value,
-                        ));
-                        None
-                    };
-                    let write = txn_types::Write::new(WriteType::Put, version, short_value);
-                    modifies.push(Modify::Put(
-                        CF_WRITE,
-                        key.append_ts(version),
-                        write.as_ref().to_bytes(),
-                    ));
-                }
-                Mutation::Delete(key) => {
-                    let write = txn_types::Write::new(WriteType::Delete, version, None);
-                    modifies.push(Modify::Put(
-                        CF_WRITE,
-                        key.append_ts(version),
-                        write.as_ref().to_bytes(),
-                    ));
-                }
-                m => return Err(box_err!("unexpected mutation: {:?}", m)),
-            };
-        }
-        self.engine.async_write(
-            &ctx,
-            WriteData::from_modifies(modifies),
-            Box::new(|(_, res): (_, kv::Result<_>)| callback(res.map_err(Error::from))),
-        )?;
-        KV_COMMAND_COUNTER_VEC_STATIC.write.inc();
-        Ok(())
     }
 
     pub fn sched_txn_command<T: StorageCallbackType>(

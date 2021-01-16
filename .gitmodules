@@ -1,0 +1,6 @@
+[submodule "demo/third-party/client-go"]
+	path = demo/third-party/client-go
+	url = https://github.com/solotzg/client-go.git
+[submodule "demo/third-party/kvproto"]
+	path = demo/third-party/kvproto
+	url = https://github.com/pingcap/kvproto.git

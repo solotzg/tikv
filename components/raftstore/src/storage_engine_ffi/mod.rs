@@ -5,11 +5,15 @@ use engine_traits::{
     EncryptionKeyManager, EncryptionMethod, FileEncryptionInfo, Iterator, SeekKey, SstReader,
     CF_DEFAULT, CF_LOCK, CF_WRITE,
 };
-use kvproto::{metapb, raft_cmdpb};
-use std::borrow::Borrow;
+use kvproto::{kvrpcpb, metapb, raft_cmdpb};
+use protobuf::Message;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+
+mod read_index_helper;
+pub use read_index_helper::{ReadIndex, ReadIndexClient};
+use std::borrow::Borrow;
 
 type StorageEngineServerPtr = *const u8;
 type RegionId = u64;
@@ -33,16 +37,36 @@ impl From<u32> for StorageEngineApplyRes {
     }
 }
 
+#[derive(Eq, PartialEq)]
+pub enum RaftProxyStatus {
+    Idle = 0,
+    Running = 1,
+    Stop = 2,
+}
+
 pub struct RaftStoreProxy {
-    pub stopped: AtomicBool,
+    pub status: AtomicU8,
     pub key_manager: Option<Arc<DataKeyManager>>,
+    pub read_index_client: Box<dyn read_index_helper::ReadIndex>,
+}
+
+impl RaftStoreProxy {
+    pub fn set_status(&mut self, s: RaftProxyStatus) {
+        self.status.store(s as u8, Ordering::SeqCst);
+    }
 }
 
 type RaftStoreProxyPtr = *const RaftStoreProxy;
 
+#[repr(C)]
+pub struct CppStrVecView {
+    view: *const BaseBuffView,
+    len: u64,
+}
+
 #[no_mangle]
-pub extern "C" fn ffi_handle_check_stopped(proxy_ptr: RaftStoreProxyPtr) -> u8 {
-    unsafe { (*proxy_ptr).stopped.load(Ordering::SeqCst) as u8 }
+pub extern "C" fn ffi_handle_get_proxy_status(proxy_ptr: RaftStoreProxyPtr) -> u8 {
+    unsafe { (*proxy_ptr).status.load(Ordering::SeqCst) }
 }
 
 #[no_mangle]
@@ -57,6 +81,40 @@ pub extern "C" fn ffi_encryption_method(proxy_ptr: RaftStoreProxyPtr) -> u8 {
             .key_manager
             .as_ref()
             .map_or(EncryptionMethod::Plaintext, |x| x.encryption_method()) as u8
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ffi_batch_read_index(
+    proxy_ptr: RaftStoreProxyPtr,
+    view: CppStrVecView,
+) -> *const u8 {
+    assert_ne!(proxy_ptr, std::ptr::null());
+    if view.len != 0 {
+        assert_ne!(view.view, std::ptr::null());
+    }
+    unsafe {
+        let mut req_vec = Vec::with_capacity(view.len as usize);
+        for i in 0..view.len as usize {
+            let mut req = kvrpcpb::ReadIndexRequest::default();
+            let p = &(*view.view.offset(i as isize));
+            assert_ne!(p.data, std::ptr::null());
+            assert_ne!(p.len, 0);
+            req.merge_from_bytes(p.to_slice()).unwrap();
+            req_vec.push(req);
+        }
+        let resp = (*proxy_ptr).read_index_client.batch_read_index(req_vec);
+        let res = get_storage_engine_server_helper().gen_batch_read_index_res(resp.len() as u64);
+        assert_ne!(res, std::ptr::null());
+        for (r, region_id) in &resp {
+            let r = ProtoMsgBaseBuff::new(r);
+            get_storage_engine_server_helper().insert_batch_read_index_resp(
+                res,
+                r.borrow().into(),
+                *region_id,
+            );
+        }
+        res
     }
 }
 
@@ -128,7 +186,7 @@ pub extern "C" fn ffi_handle_get_file(
         (*proxy_ptr).key_manager.as_ref().map_or(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
-                let p = key_manager.get_file(std::str::from_utf8_unchecked(name.into()));
+                let p = key_manager.get_file(std::str::from_utf8_unchecked(name.to_slice()));
                 p.map_or_else(
                     |e| {
                         FileEncryptionInfoRes::error(
@@ -153,7 +211,7 @@ pub extern "C" fn ffi_handle_new_file(
         (*proxy_ptr).key_manager.as_ref().map_or(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
-                let p = key_manager.new_file(std::str::from_utf8_unchecked(name.into()));
+                let p = key_manager.new_file(std::str::from_utf8_unchecked(name.to_slice()));
                 p.map_or_else(
                     |e| {
                         FileEncryptionInfoRes::error(
@@ -178,7 +236,7 @@ pub extern "C" fn ffi_handle_delete_file(
         (*proxy_ptr).key_manager.as_ref().map_or(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
-                let p = key_manager.delete_file(std::str::from_utf8_unchecked(name.into()));
+                let p = key_manager.delete_file(std::str::from_utf8_unchecked(name.to_slice()));
                 p.map_or_else(
                     |e| {
                         FileEncryptionInfoRes::error(
@@ -206,8 +264,8 @@ pub extern "C" fn ffi_handle_link_file(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
                 let p = key_manager.link_file(
-                    std::str::from_utf8_unchecked(src.into()),
-                    std::str::from_utf8_unchecked(dst.into()),
+                    std::str::from_utf8_unchecked(src.to_slice()),
+                    std::str::from_utf8_unchecked(dst.to_slice()),
                 );
                 p.map_or_else(
                     |e| {
@@ -235,8 +293,8 @@ pub extern "C" fn ffi_handle_rename_file(
             FileEncryptionInfoRes::new(FileEncryptionRes::Disabled),
             |key_manager| {
                 let p = key_manager.rename_file(
-                    std::str::from_utf8_unchecked(src.into()),
-                    std::str::from_utf8_unchecked(dst.into()),
+                    std::str::from_utf8_unchecked(src.to_slice()),
+                    std::str::from_utf8_unchecked(dst.to_slice()),
                 );
                 p.map_or_else(
                     |e| {
@@ -257,7 +315,7 @@ pub extern "C" fn ffi_handle_rename_file(
 #[repr(C)]
 pub struct RaftStoreProxyHelper {
     proxy_ptr: RaftStoreProxyPtr,
-    handle_check_stopped: extern "C" fn(RaftStoreProxyPtr) -> u8,
+    handle_get_proxy_status: extern "C" fn(RaftStoreProxyPtr) -> u8,
     is_encryption_enabled: extern "C" fn(RaftStoreProxyPtr) -> u8,
     encryption_method: extern "C" fn(RaftStoreProxyPtr) -> u8,
     handle_get_file: extern "C" fn(RaftStoreProxyPtr, BaseBuffView) -> FileEncryptionInfoRes,
@@ -267,13 +325,14 @@ pub struct RaftStoreProxyHelper {
         extern "C" fn(RaftStoreProxyPtr, BaseBuffView, BaseBuffView) -> FileEncryptionInfoRes,
     handle_rename_file:
         extern "C" fn(RaftStoreProxyPtr, BaseBuffView, BaseBuffView) -> FileEncryptionInfoRes,
+    handle_batch_read_index: extern "C" fn(RaftStoreProxyPtr, CppStrVecView) -> *const u8,
 }
 
 impl RaftStoreProxyHelper {
     pub fn new(proxy: &RaftStoreProxy) -> Self {
         RaftStoreProxyHelper {
             proxy_ptr: proxy,
-            handle_check_stopped: ffi_handle_check_stopped,
+            handle_get_proxy_status: ffi_handle_get_proxy_status,
             is_encryption_enabled: ffi_is_encryption_enabled,
             encryption_method: ffi_encryption_method,
             handle_get_file: ffi_handle_get_file,
@@ -281,6 +340,7 @@ impl RaftStoreProxyHelper {
             handle_delete_file: ffi_handle_delete_file,
             handle_link_file: ffi_handle_link_file,
             handle_rename_file: ffi_handle_rename_file,
+            handle_batch_read_index: ffi_batch_read_index,
         }
     }
 }
@@ -381,17 +441,11 @@ impl WriteCmds {
         WriteCmds::default()
     }
 
-    pub fn push(&mut self, key: &[u8], val: &[u8], cmd_type: WriteCmdType, cf: u8) {
-        self.keys.push(BaseBuffView {
-            data: key.as_ptr(),
-            len: key.len() as u64,
-        });
-        self.vals.push(BaseBuffView {
-            data: val.as_ptr(),
-            len: val.len() as u64,
-        });
+    pub fn push(&mut self, key: &[u8], val: &[u8], cmd_type: WriteCmdType, cf: WriteCmdCf) {
+        self.keys.push(key.into());
+        self.vals.push(val.into());
         self.cmd_type.push(cmd_type.into());
-        self.cf.push(cf);
+        self.cf.push(cf.into());
     }
 
     pub fn len(&self) -> usize {
@@ -414,14 +468,8 @@ pub fn gen_snap_kv_data_view(snap: &SnapshotKV) -> SnapshotKVView {
     let mut vals = Vec::<BaseBuffView>::with_capacity(snap.len());
 
     for (k, v) in snap {
-        keys.push(BaseBuffView {
-            data: k.as_ptr(),
-            len: k.len() as u64,
-        });
-        vals.push(BaseBuffView {
-            data: v.as_ptr(),
-            len: v.len() as u64,
-        });
+        keys.push(k.as_slice().into());
+        vals.push(v.as_slice().into());
     }
 
     (keys, vals)
@@ -490,7 +538,7 @@ pub struct BaseBuffView {
 
 impl BaseBuffView {
     pub fn to_slice(&self) -> &[u8] {
-        self.into()
+        unsafe { std::slice::from_raw_parts(self.data, self.len as usize) }
     }
 }
 
@@ -499,27 +547,6 @@ impl From<&[u8]> for BaseBuffView {
         Self {
             data: s.as_ptr(),
             len: s.len() as u64,
-        }
-    }
-}
-
-impl From<&BaseBuffView> for &[u8] {
-    fn from(b: &BaseBuffView) -> Self {
-        unsafe { std::slice::from_raw_parts(b.data, b.len as usize) }
-    }
-}
-
-impl From<BaseBuffView> for &[u8] {
-    fn from(b: BaseBuffView) -> Self {
-        b.borrow().into()
-    }
-}
-
-impl Default for BaseBuffView {
-    fn default() -> Self {
-        Self {
-            data: std::ptr::null(),
-            len: 0,
         }
     }
 }
@@ -680,8 +707,10 @@ pub struct StorageEngineServerHelper {
         u64,
     ) -> RawCppPtr,
     apply_pre_handled_snapshot: extern "C" fn(StorageEngineServerPtr, *const u8, u32),
-    handle_get_table_sync_status: extern "C" fn(StorageEngineServerPtr, u64) -> CppStrWithView,
+    _none: *const u8,
     gc_raw_cpp_ptr: extern "C" fn(StorageEngineServerPtr, *const u8, u32),
+    gen_batch_read_index_res: extern "C" fn(cap: u64) -> *const u8,
+    insert_batch_read_index_resp: extern "C" fn(*const u8, BaseBuffView, u64),
     is_storage_engine_snapshot: extern "C" fn(StorageEngineServerPtr, BaseBuffView) -> u8,
     gen_storage_engine_snapshot: extern "C" fn(StorageEngineServerPtr, RaftCmdHeader) -> RawCppPtr,
     serialize_storage_engine_snapshot_into: extern "C" fn(
@@ -827,12 +856,8 @@ impl StorageEngineServerHelper {
         )
     }
 
-    fn gc_raw_cpp_ptr(&self, p: *const u8, tp: u32) {
-        (self.gc_raw_cpp_ptr)(self.inner, p, tp);
-    }
-
-    pub fn handle_get_table_sync_status(&self, table_id: u64) -> CppStrWithView {
-        (self.handle_get_table_sync_status)(self.inner, table_id)
+    fn gc_raw_cpp_ptr(&self, ptr: *const u8, tp: u32) {
+        (self.gc_raw_cpp_ptr)(self.inner, ptr, tp);
     }
 
     pub fn handle_compute_fs_stats(&self) -> FsStats {
@@ -882,10 +907,15 @@ impl StorageEngineServerHelper {
         resp: &raft_cmdpb::AdminResponse,
         header: RaftCmdHeader,
     ) -> StorageEngineApplyRes {
-        let req = &ProtoMsgBaseBuff::new(req);
-        let resp = &ProtoMsgBaseBuff::new(resp);
+        let req = ProtoMsgBaseBuff::new(req);
+        let resp = ProtoMsgBaseBuff::new(resp);
 
-        let res = (self.handle_admin_raft_cmd)(self.inner, req.into(), resp.into(), header);
+        let res = (self.handle_admin_raft_cmd)(
+            self.inner,
+            req.borrow().into(),
+            resp.borrow().into(),
+            header,
+        );
         res.into()
     }
 
@@ -897,11 +927,10 @@ impl StorageEngineServerHelper {
         index: u64,
         term: u64,
     ) -> RawCppPtr {
-        let region = &ProtoMsgBaseBuff::new(region);
-
+        let region = ProtoMsgBaseBuff::new(region);
         (self.pre_handle_snapshot)(
             self.inner,
-            region.into(),
+            region.borrow().into(),
             peer_id,
             snaps.gen_snapshot_view(),
             index,
@@ -909,8 +938,8 @@ impl StorageEngineServerHelper {
         )
     }
 
-    pub fn apply_pre_handled_snapshot(&self, s: *const u8, tp: u32) {
-        (self.apply_pre_handled_snapshot)(self.inner, s, tp)
+    pub fn apply_pre_handled_snapshot(&self, snap: RawCppPtr) {
+        (self.apply_pre_handled_snapshot)(self.inner, snap.ptr, snap.tp)
     }
 
     pub fn handle_ingest_sst(
@@ -930,11 +959,15 @@ impl StorageEngineServerHelper {
         (self.handle_check_terminated)(self.inner) != 0
     }
 
-    fn gen_cpp_string(&self, buff: &[u8]) -> *const u8 {
-        (self.gen_cpp_string)(BaseBuffView {
-            data: buff.as_ptr(),
-            len: buff.len() as u64,
-        })
-        .into_raw()
+    fn gen_cpp_string(&self, buff: &[u8]) -> StorageEngineRawString {
+        (self.gen_cpp_string)(buff.into()).into_raw()
+    }
+
+    fn gen_batch_read_index_res(&self, cap: u64) -> *const u8 {
+        (self.gen_batch_read_index_res)(cap)
+    }
+
+    fn insert_batch_read_index_resp(&self, data: *const u8, buf: BaseBuffView, region_id: u64) {
+        (self.insert_batch_read_index_resp)(data, buf, region_id)
     }
 }
