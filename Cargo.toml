@@ -207,6 +207,8 @@ members = [
   "components/into_other",
   "components/encryption",
   "components/error_code",
+
+  "gen_ffi_interfaces",
 ]
 default-members = ["tiflash-proxy"]
 

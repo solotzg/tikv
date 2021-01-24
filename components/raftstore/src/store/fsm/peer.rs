@@ -61,7 +61,7 @@ use crate::store::{
     util, CasualMessage, Config, MergeResultKind, PeerMsg, PeerTicks, RaftCommand, SignificantMsg,
     SnapKey, StoreMsg,
 };
-use crate::tiflash_ffi::get_tiflash_server_helper;
+use crate::tiflash_ffi::get_engine_store_server_helper;
 use crate::{Error, Result};
 use keys::{self, enc_end_key, enc_start_key};
 
@@ -1737,7 +1737,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
 
         {
             // hacked by solotzg
-            get_tiflash_server_helper().handle_destroy(region_id);
+            get_engine_store_server_helper().handle_destroy(region_id);
         }
 
         let mut meta = self.ctx.store_meta.lock().unwrap();

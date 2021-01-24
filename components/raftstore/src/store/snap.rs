@@ -404,7 +404,7 @@ impl Snap {
 
             let (cf_type, snap_kv) = if plain_file_used(cf_file.cf) {
                 (
-                    tiflash_ffi::WriteCmdCf::Lock,
+                    tiflash_ffi::ColumnFamilyType::Lock,
                     Snap::read_lock_cf_file(
                         cf_file.path.to_str().unwrap(),
                         self.mgr.encryption_key_manager.as_ref(),
@@ -412,9 +412,9 @@ impl Snap {
                 )
             } else {
                 let cf_type = if cf_file.cf == CF_DEFAULT {
-                    tiflash_ffi::WriteCmdCf::Default
+                    tiflash_ffi::ColumnFamilyType::Default
                 } else if cf_file.cf == CF_WRITE {
-                    tiflash_ffi::WriteCmdCf::Write
+                    tiflash_ffi::ColumnFamilyType::Write
                 } else {
                     unreachable!()
                 };
@@ -444,7 +444,7 @@ impl Snap {
         term: u64,
     ) -> PreHandledSnapshot {
         let mut snapshot_helper = self.gen_snapshot_helper(region);
-        let res = tiflash_ffi::get_tiflash_server_helper().pre_handle_snapshot(
+        let res = tiflash_ffi::get_engine_store_server_helper().pre_handle_snapshot(
             &region,
             peer_id,
             &mut snapshot_helper,

@@ -41,7 +41,7 @@ use super::Result;
 use crate::config::ConfigController;
 use configuration::Configuration;
 use pd_client::RpcClient;
-use raftstore::tiflash_ffi::get_tiflash_server_helper;
+use raftstore::tiflash_ffi::get_engine_store_server_helper;
 use security::{self, SecurityConfig};
 use tikv_alloc::error::ProfError;
 use tikv_util::collections::HashMap;
@@ -688,7 +688,7 @@ where
             }
         };
 
-        let status = get_tiflash_server_helper().handle_get_table_sync_status(table_id);
+        let status = get_engine_store_server_helper().handle_get_table_sync_status(table_id);
         let data = status.view.to_slice().to_vec();
 
         match Response::builder().body(hyper::Body::from(data)) {

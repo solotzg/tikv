@@ -62,8 +62,8 @@ use txn_types::TxnExtra;
 use super::metrics::*;
 
 use crate::tiflash_ffi::{
-    gen_snap_kv_data_from_sst, get_tiflash_server_helper, RaftCmdHeader, SnapshotHelper,
-    TiFlashApplyRes, WriteCmdCf, WriteCmdType, WriteCmds,
+    gen_snap_kv_data_from_sst, get_engine_store_server_helper, ColumnFamilyType, RaftCmdHeader,
+    SnapshotHelper, TiFlashApplyRes, WriteCmdType, WriteCmds,
 };
 
 const DEFAULT_APPLY_WB_SIZE: usize = 4 * 1024;
@@ -882,7 +882,7 @@ impl ApplyDelegate {
         {
             // hacked by solotzg.
             let cmds = WriteCmds::new();
-            get_tiflash_server_helper().handle_write_raft_cmd(
+            get_engine_store_server_helper().handle_write_raft_cmd(
                 &cmds,
                 RaftCmdHeader::new(self.region.get_id(), index, term),
             );
@@ -1081,7 +1081,7 @@ impl ApplyDelegate {
                 {
                     // hacked by solotzg.
                     let cmds = WriteCmds::new();
-                    get_tiflash_server_helper().handle_write_raft_cmd(
+                    get_engine_store_server_helper().handle_write_raft_cmd(
                         &cmds,
                         RaftCmdHeader::new(self.region.get_id(), index, term),
                     );
@@ -1284,7 +1284,7 @@ impl ApplyDelegate {
             TiFlashApplyRes::None
         } else {
             // hacked by solotzg.
-            get_tiflash_server_helper().handle_admin_raft_cmd(
+            get_engine_store_server_helper().handle_admin_raft_cmd(
                 &request,
                 &response,
                 RaftCmdHeader::new(
@@ -1332,7 +1332,7 @@ impl ApplyDelegate {
                     let put = req.get_put();
                     let cf = crate::tiflash_ffi::name_to_cf(put.get_cf());
                     let (key, value) = (put.get_key(), put.get_value());
-                    if cf != WriteCmdCf::Lock {
+                    if cf != ColumnFamilyType::Lock {
                         self.metrics.size_diff_hint += key.len() as i64 + value.len() as i64;
                         self.metrics.written_bytes += key.len() as u64 + value.len() as u64;
                         self.metrics.written_keys += 1;
@@ -1343,7 +1343,7 @@ impl ApplyDelegate {
                     let del = req.get_delete();
                     let cf = crate::tiflash_ffi::name_to_cf(del.get_cf());
                     let key = del.get_key();
-                    if cf != WriteCmdCf::Lock {
+                    if cf != ColumnFamilyType::Lock {
                         self.metrics.size_diff_hint -= key.len() as i64;
                         self.metrics.delete_keys_hint += 1;
                         self.metrics.written_bytes += key.len() as u64;
@@ -1404,7 +1404,7 @@ impl ApplyDelegate {
             }
         } else {
             let flash_res = {
-                get_tiflash_server_helper().handle_write_raft_cmd(
+                get_engine_store_server_helper().handle_write_raft_cmd(
                     &cmds,
                     RaftCmdHeader::new(
                         self.region.get_id(),
@@ -1608,15 +1608,15 @@ impl ApplyDelegate {
             );
 
             if sst.get_cf_name() == CF_WRITE {
-                snapshot_helper.add_cf_snap(WriteCmdCf::Write, snap);
+                snapshot_helper.add_cf_snap(ColumnFamilyType::Write, snap);
             } else if sst.get_cf_name() == CF_DEFAULT {
-                snapshot_helper.add_cf_snap(WriteCmdCf::Default, snap);
+                snapshot_helper.add_cf_snap(ColumnFamilyType::Default, snap);
             } else {
                 unreachable!()
             }
         }
 
-        get_tiflash_server_helper().handle_ingest_sst(
+        get_engine_store_server_helper().handle_ingest_sst(
             &mut snapshot_helper,
             RaftCmdHeader::new(
                 self.region.get_id(),

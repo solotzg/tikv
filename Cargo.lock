@@ -1375,6 +1375,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gen_ffi_interfaces"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "walkdir",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

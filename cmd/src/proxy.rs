@@ -5,7 +5,7 @@ use std::process;
 use crate::setup::validate_and_persist_config;
 use clap::{App, Arg};
 use libc::{c_char, c_int};
-use raftstore::tiflash_ffi::{get_tiflash_server_helper, TIFLASH_SERVER_HELPER_PTR};
+use raftstore::tiflash_ffi::{get_engine_store_server_helper, ENGINE_STORE_SERVER_HELPER_PTR};
 use std::ffi::CStr;
 use tikv::config::TiKvConfig;
 
@@ -21,7 +21,7 @@ pub unsafe extern "C" fn run_proxy(
     tiflash_server_helper: *const u8,
 ) {
     {
-        let ptr = &TIFLASH_SERVER_HELPER_PTR as *const _ as *mut _;
+        let ptr = &ENGINE_STORE_SERVER_HELPER_PTR as *const _ as *mut _;
         *ptr = tiflash_server_helper;
     }
 
@@ -32,7 +32,7 @@ pub unsafe extern "C" fn run_proxy(
         args.push(raw.to_str().unwrap());
     }
 
-    get_tiflash_server_helper().check();
+    get_engine_store_server_helper().check();
 
     let matches = App::new("TiFlash Proxy")
         .about("Proxy for TiFLash to connect TiKV cluster")
