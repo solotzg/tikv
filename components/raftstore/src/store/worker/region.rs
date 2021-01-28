@@ -33,7 +33,7 @@ use tikv_util::timer::Timer;
 use tikv_util::worker::{Runnable, RunnableWithTimer};
 
 use super::metrics::*;
-use crate::tiflash_ffi;
+use crate::engine_store_ffi;
 
 const GENERATE_POOL_SIZE: usize = 2;
 
@@ -100,7 +100,7 @@ impl Display for Task {
     }
 }
 
-struct TiFlashApplyTask {
+struct EngineStoreApplySnapTask {
     region_id: u64,
     peer_id: u64,
     status: Arc<AtomicUsize>,
@@ -363,7 +363,7 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
     }
 
     /// Applies snapshot data of the Region.
-    fn apply_snap(&mut self, task: TiFlashApplyTask) -> Result<()> {
+    fn apply_snap(&mut self, task: EngineStoreApplySnapTask) -> Result<()> {
         let region_id = task.region_id;
         let peer_id = task.peer_id;
         let abort = task.status;
@@ -398,10 +398,11 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
             );
             assert_eq!(idx, snap.index);
             assert_eq!(term, snap.term);
-            tiflash_ffi::get_engine_store_server_helper().apply_pre_handled_snapshot(snap.inner);
+            engine_store_ffi::get_engine_store_server_helper()
+                .apply_pre_handled_snapshot(snap.inner);
         } else {
             info!(
-                "apply data to tiflash";
+                "apply data to engine-store";
                 "region_id" => region_id,
             );
             let s = box_try!(self.mgr.get_concrete_snapshot_for_applying(&snap_key));
@@ -410,7 +411,7 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
             }
             check_abort(&abort)?;
             let pre_handled_snap = s.pre_handle_snapshot(&region, peer_id, idx, term);
-            tiflash_ffi::get_engine_store_server_helper()
+            engine_store_ffi::get_engine_store_server_helper()
                 .apply_pre_handled_snapshot(pre_handled_snap.inner);
         }
 
@@ -430,7 +431,7 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
     }
 
     /// Tries to apply the snapshot of the specified Region. It calls `apply_snap` to do the actual work.
-    fn handle_apply(&mut self, task: TiFlashApplyTask) {
+    fn handle_apply(&mut self, task: EngineStoreApplySnapTask) {
         let status = task.status.clone();
         let region_id = task.region_id;
         status.compare_and_swap(JOB_STATUS_PENDING, JOB_STATUS_RUNNING, Ordering::SeqCst);
@@ -617,7 +618,7 @@ pub struct Runner<R> {
     ctx: SnapContext<R>,
     // we may delay some apply tasks if level 0 files to write stall threshold,
     // pending_applies records all delayed apply task, and will check again later
-    pending_applies: VecDeque<TiFlashApplyTask>,
+    pending_applies: VecDeque<EngineStoreApplySnapTask>,
     opt_pre_handle_snap: bool,
 }
 
@@ -736,7 +737,7 @@ where
                     sender.send(None).unwrap();
                 }
 
-                self.pending_applies.push_back(TiFlashApplyTask {
+                self.pending_applies.push_back(EngineStoreApplySnapTask {
                     region_id,
                     peer_id,
                     status,

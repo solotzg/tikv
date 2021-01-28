@@ -30,7 +30,7 @@ use crate::store::Callback;
 use crate::store::StoreInfo;
 use crate::store::{CasualMessage, PeerMsg, RaftCommand, RaftRouter};
 
-use crate::tiflash_ffi::get_engine_store_server_helper;
+use crate::engine_store_ffi::get_engine_store_server_helper;
 use pd_client::metrics::*;
 use pd_client::{Error, PdClient, RegionStat};
 use tikv_util::collections::HashMap;

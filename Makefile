@@ -94,7 +94,6 @@ export PROXY_BUILD_TIME := $(shell date -u '+%Y-%m-%d %H:%M:%S')
 export PROXY_BUILD_RUSTC_VERSION := $(shell rustc --version 2> /dev/null || echo ${BUILD_INFO_RUSTC_FALLBACK})
 export PROXY_BUILD_GIT_HASH ?= $(shell git rev-parse HEAD 2> /dev/null || echo ${BUILD_INFO_GIT_FALLBACK})
 export PROXY_BUILD_GIT_BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD 2> /dev/null || echo ${BUILD_INFO_GIT_FALLBACK})
-
 export DOCKER_IMAGE_NAME ?= "pingcap/tikv"
 export DOCKER_IMAGE_TAG ?= "latest"
 
@@ -121,12 +120,8 @@ all: format build test error-code
 dev: format clippy
 	@env FAIL_POINT=1 make test
 
-build_by_type:
-	@echo profile is ${PROXY_PROFILE}
-	cargo build --no-default-features --features "${ENABLE_FEATURES}" --${BUILD_TYPE}
-
 build:
-	@export PROXY_PROFILE=debug; make build_by_type
+	PROXY_ENABLE_FEATURES="${ENABLE_FEATURES}" ./build.sh
 
 ## Release builds (optimized dev builds)
 ## ----------------------------

@@ -39,6 +39,7 @@ use tikv_util::{escape, is_zero_duration, Either};
 use txn_types::TxnExtra;
 
 use crate::coprocessor::RegionChangeEvent;
+use crate::engine_store_ffi::get_engine_store_server_helper;
 use crate::store::cmd_resp::{bind_term, new_error};
 use crate::store::fsm::store::{PollContext, StoreMeta};
 use crate::store::fsm::{
@@ -60,7 +61,6 @@ use crate::store::{
     util, CasualMessage, Config, MergeResultKind, PeerMsg, PeerTicks, RaftCommand, SignificantMsg,
     SnapKey, StoreMsg,
 };
-use crate::tiflash_ffi::get_engine_store_server_helper;
 use crate::{Error, Result};
 use keys::{self, enc_end_key, enc_start_key};
 

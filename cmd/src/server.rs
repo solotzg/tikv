@@ -70,9 +70,9 @@ use tikv_util::{
     worker::{FutureWorker, Worker},
 };
 
-use raftstore::tiflash_ffi::{
-    get_engine_store_server_helper, RaftProxyStatus, RaftStoreProxy, ReadIndexClient,
-    TiFlashRaftProxyHelperFFI, TiFlashStatus,
+use raftstore::engine_store_ffi::{
+    get_engine_store_server_helper, EngineStoreServerStatus, RaftProxyStatus, RaftStoreProxy,
+    RaftStoreProxyFFIHelper, ReadIndexClient,
 };
 use std::sync::atomic::AtomicU8;
 
@@ -110,23 +110,27 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
         }),
     };
 
-    let proxy_helper = TiFlashRaftProxyHelperFFI::new(&proxy);
+    let proxy_helper = RaftStoreProxyFFIHelper::new(&proxy);
 
-    info!("set tiflash proxy helper");
+    info!("set raft-store proxy helper");
 
     get_engine_store_server_helper().handle_set_proxy(&proxy_helper);
 
-    info!("wait for tiflash server to start");
-    while get_engine_store_server_helper().handle_get_tiflash_status() == TiFlashStatus::Idle {
+    info!("wait for engine-store server to start");
+    while get_engine_store_server_helper().handle_get_engine_store_server_status()
+        == EngineStoreServerStatus::Idle
+    {
         thread::sleep(Duration::from_millis(200));
     }
 
-    if get_engine_store_server_helper().handle_get_tiflash_status() != TiFlashStatus::Running {
-        info!("tiflash server is not running, make proxy exit");
+    if get_engine_store_server_helper().handle_get_engine_store_server_status()
+        != EngineStoreServerStatus::Running
+    {
+        info!("engine-store server is not running, make proxy exit");
         return;
     }
 
-    info!("tiflash server is started");
+    info!("engine-store server is started");
 
     tikv.init_engines();
     let gc_worker = tikv.init_gc_worker();
@@ -148,19 +152,21 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
         }
     }
 
-    info!("got terminal signal from tiflash and stop all services");
+    info!("got terminal signal from engine-store and stop all services");
 
     tikv.stop();
 
     proxy.set_status(RaftProxyStatus::Stopped);
 
-    info!("all services in tiflash proxy are stopped");
+    info!("all services in raft-store proxy are stopped");
 
-    info!("wait for tiflash server to stop");
-    while get_engine_store_server_helper().handle_get_tiflash_status() != TiFlashStatus::Stopped {
+    info!("wait for engine-store server to stop");
+    while get_engine_store_server_helper().handle_get_engine_store_server_status()
+        != EngineStoreServerStatus::Stopped
+    {
         thread::sleep(Duration::from_millis(200));
     }
-    info!("tiflash server is stopped");
+    info!("engine-store server is stopped");
 }
 
 const RESERVED_OPEN_FDS: u64 = 1000;
