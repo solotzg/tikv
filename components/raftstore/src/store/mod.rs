@@ -38,6 +38,7 @@ pub use self::peer_storage::{
     RAFT_INIT_LOG_INDEX, RAFT_INIT_LOG_TERM,
 };
 pub use self::region_snapshot::{new_temp_engine, RegionIterator, RegionSnapshot};
+pub use self::snap::LockCFFileReader;
 pub use self::snap::{
     check_abort, copy_snapshot,
     snap_io::{apply_sst_cf_file, build_sst_cf_file},
@@ -51,4 +52,3 @@ pub use self::worker::{
 };
 pub use self::worker::{KeyEntry, LocalReader, RegionTask};
 pub use self::worker::{SplitCheckRunner, SplitCheckTask};
-pub use self::snap::LockCFFileReader;
