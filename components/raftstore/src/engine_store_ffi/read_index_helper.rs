@@ -5,12 +5,20 @@ use kvproto::kvrpcpb::{ReadIndexRequest, ReadIndexResponse};
 use kvproto::raft_cmdpb::{CmdType, RaftCmdRequest, RaftRequestHeader, Request as RaftRequest};
 use tikv_util::future::paired_future_callback;
 
-pub trait ReadIndex {
+pub trait ReadIndex: Sync + Send {
     fn batch_read_index(&self, req: Vec<ReadIndexRequest>) -> Vec<(ReadIndexResponse, u64)>;
 }
 
 pub struct ReadIndexClient {
-    pub router: RaftRouter<RocksEngine>,
+    pub router: std::sync::Mutex<RaftRouter<RocksEngine>>,
+}
+
+impl ReadIndexClient {
+    pub fn new(router: RaftRouter<RocksEngine>) -> Self {
+        Self {
+            router: std::sync::Mutex::new(router),
+        }
+    }
 }
 
 impl ReadIndex for ReadIndexClient {
@@ -35,6 +43,8 @@ impl ReadIndex for ReadIndexClient {
 
             if let Err(_) = self
                 .router
+                .lock()
+                .unwrap()
                 .send_raft_command_with_cb(cmd, Callback::Read(cb))
             {
                 let mut resp = ReadIndexResponse::default();
