@@ -200,9 +200,7 @@ impl<E: KvEngine> RaftRouter<E> {
         req: kvproto::raft_cmdpb::RaftCmdRequest,
         cb: Callback<E>,
     ) -> std::result::Result<(), TrySendError<RaftCommand<E>>> {
-        use txn_types::TxnExtra;
-
-        let cmd = RaftCommand::with_txn_extra(req, cb, TxnExtra::default());
+        let cmd = RaftCommand::new(req, cb);
         self.send_raft_command(cmd)
     }
 

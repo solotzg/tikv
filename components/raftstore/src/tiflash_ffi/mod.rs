@@ -15,7 +15,7 @@ use protobuf::Message;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
-pub use read_index_helper::{ReadIndex, ReadIndexClient};
+pub use read_index_helper::ReadIndexClient;
 use std::borrow::Borrow;
 
 use crate::store::LockCFFileReader;
