@@ -207,7 +207,7 @@ members = [
   "components/error_code",
 
   "raftstore-proxy",
-  "gen_ffi_interfaces"
+  "gen-proxy-ffi"
 ]
 default-members = ["raftstore-proxy"]
 
