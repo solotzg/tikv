@@ -41,16 +41,11 @@ impl ReadIndex for ReadIndexClient {
 
             let (cb, future) = paired_future_callback();
 
-            if let Err(_) = self
+            let _ = self
                 .router
                 .lock()
                 .unwrap()
-                .send_raft_command_with_cb(cmd, Callback::Read(cb))
-            {
-                let mut resp = ReadIndexResponse::default();
-                resp.set_region_error(Default::default());
-                return vec![(resp, region_id)];
-            }
+                .send_raft_command_with_cb(cmd, Callback::Read(cb));
             router_cb_vec.push((future, region_id));
         }
 
@@ -81,15 +76,12 @@ impl ReadIndex for ReadIndexClient {
                 resp
             });
 
-            let resp = future.wait().unwrap_or({
+            let resp = future.wait().unwrap_or_else(|_| {
                 let mut resp = ReadIndexResponse::default();
                 resp.set_region_error(Default::default());
                 resp
             });
             read_index_res.push((resp, region_id));
-            if read_index_res.last().unwrap().0.has_region_error() {
-                return read_index_res;
-            }
         }
         debug!("batch_read_index success"; "response"=>?read_index_res);
         read_index_res
