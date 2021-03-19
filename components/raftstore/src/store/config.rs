@@ -233,7 +233,7 @@ impl Default for Config {
             max_leader_missing_duration: ReadableDuration::hours(2),
             abnormal_leader_missing_duration: ReadableDuration::minutes(10),
             peer_stale_state_check_interval: ReadableDuration::minutes(5),
-            leader_transfer_max_log_lag: 10,
+            leader_transfer_max_log_lag: 128,
             snap_apply_batch_size: ReadableSize::mb(10),
             snap_handle_pool_size: 2,
             lock_cf_compact_interval: ReadableDuration::minutes(10),
