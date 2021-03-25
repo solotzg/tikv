@@ -1316,12 +1316,6 @@ impl ApplyDelegate {
                     response = AdminResponse::new();
                     exec_result = ApplyResult::None;
                     ctx.exec_ctx.as_mut().unwrap().apply_state = ori_apply_state.unwrap();
-                    info!(
-                        "ignore admin command: CompactLog";
-                        "region_id" => self.region_id(),
-                        "term" => ctx.exec_ctx.as_ref().unwrap().term,
-                        "index" => ctx.exec_ctx.as_ref().unwrap().index,
-                    );
                 }
             }
             _ => {}
