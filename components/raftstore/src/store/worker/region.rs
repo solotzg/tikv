@@ -4,7 +4,7 @@ use std::collections::Bound::{Excluded, Included, Unbounded};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::{self, Display, Formatter};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{SyncSender, TryRecvError};
+use std::sync::mpsc::SyncSender;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use std::u64;
@@ -613,13 +613,18 @@ impl<R: CasualRouter<RocksEngine>> SnapContext<R> {
     }
 }
 
+struct PreHandleSnapCfg {
+    pool_size: usize,
+    pre_handle_snap: bool,
+}
+
 pub struct Runner<R> {
     pool: ThreadPool<TaskCell>,
     ctx: SnapContext<R>,
     // we may delay some apply tasks if level 0 files to write stall threshold,
     // pending_applies records all delayed apply task, and will check again later
     pending_applies: VecDeque<EngineStoreApplySnapTask>,
-    opt_pre_handle_snap: bool,
+    pre_handle_snap_cfg: PreHandleSnapCfg,
 }
 
 impl<R: CasualRouter<RocksEngine>> Runner<R> {
@@ -631,12 +636,12 @@ impl<R: CasualRouter<RocksEngine>> Runner<R> {
         coprocessor_host: CoprocessorHost,
         router: R,
     ) -> Runner<R> {
-        let (pool_size, opt_pre_handle_snap) = if snap_handle_pool_size == 0 {
+        let (pool_size, pre_handle_snap) = if snap_handle_pool_size == 0 {
             (GENERATE_POOL_SIZE, false)
         } else {
             (snap_handle_pool_size, true)
         };
-        info!("create region runner"; "pool_size" => pool_size, "opt_pre_handle_snap" => opt_pre_handle_snap);
+        info!("create region runner"; "pool_size" => pool_size, "pre_handle_snap" => pre_handle_snap);
         Runner {
             pool: Builder::new(thd_name!("region-task"))
                 .max_thread_count(pool_size)
@@ -650,7 +655,10 @@ impl<R: CasualRouter<RocksEngine>> Runner<R> {
                 router,
             },
             pending_applies: VecDeque::new(),
-            opt_pre_handle_snap,
+            pre_handle_snap_cfg: PreHandleSnapCfg {
+                pool_size,
+                pre_handle_snap,
+            },
         }
     }
 
@@ -671,21 +679,18 @@ impl<R: CasualRouter<RocksEngine>> Runner<R> {
     fn handle_pending_applies(&mut self) {
         fail_point!("apply_pending_snapshot", |_| {});
         while !self.pending_applies.is_empty() {
-            let mut stop = true;
-            match self.pending_applies.front().unwrap().recv.try_recv() {
+            match self.pending_applies.front().unwrap().recv.recv() {
                 Ok(pre_handled_snap) => {
                     let mut snap = self.pending_applies.pop_front().unwrap();
-                    stop = pre_handled_snap.as_ref().map_or(false, |s| !s.empty);
                     snap.pre_handled_snap = pre_handled_snap;
                     self.ctx.handle_apply(snap);
                 }
-                Err(TryRecvError::Disconnected) => {
+                Err(_) => {
                     let snap = self.pending_applies.pop_front().unwrap();
                     self.ctx.handle_apply(snap);
                 }
-                Err(TryRecvError::Empty) => {}
             }
-            if stop {
+            if self.pending_applies.len() < self.pre_handle_snap_cfg.pool_size {
                 break;
             }
         }
@@ -727,7 +732,7 @@ where
                 let (sender, receiver) = mpsc::channel();
                 let ctx = self.ctx.clone();
                 let abort = status.clone();
-                if self.opt_pre_handle_snap {
+                if self.pre_handle_snap_cfg.pre_handle_snap {
                     self.pool.spawn(async move {
                         let _ = ctx
                             .pre_handle_snapshot(region_id, peer_id, abort)
