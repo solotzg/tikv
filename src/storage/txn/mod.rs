@@ -28,7 +28,7 @@ use kvproto::kvrpcpb::LockInfo;
 use std::error;
 use std::fmt;
 use std::io::Error as IoError;
-use txn_types::{Key, TimeStamp, Value};
+use txn_types::{Key, TimeStamp};
 
 pub use self::commands::{Command, RESOLVE_LOCK_BATCH_SIZE};
 pub use self::latch::{Latches, Lock};
@@ -71,10 +71,6 @@ pub enum ProcessResult {
     },
     SecondaryLocksStatus {
         status: SecondaryLocksStatus,
-    },
-    RawCompareAndSetRes {
-        previous_value: Option<Value>,
-        not_equal: bool,
     },
 }
 
