@@ -1601,9 +1601,9 @@ dependencies = [
 
 [[package]]
 name = "grpcio"
-version = "0.8.2"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "397c5a9f569ba6beabec1e5b0b622d5e182913de45480666ae76849dd7ac01c9"
+checksum = "f97e021739b917535217829934dc479bd3c4798d85adb5fc4890a985eb04c6e9"
 dependencies = [
  "bytes 1.0.1",
  "futures 0.3.7",
@@ -1630,23 +1630,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "grpcio-health"
+name = "grpcio-sys"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62390e02d912a4cda2d93c500f3d3ce29ef5fc1c0501e89c61c8d005e5a3f3e3"
-dependencies = [
- "futures 0.3.7",
- "grpcio",
- "log",
- "prost",
- "protobuf",
-]
-
-[[package]]
-name = "grpcio-sys"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f89a56d830be4dddc939c377c95e3b77e30c86a8df99c20095c34cf9038447b"
+checksum = "91a3435fb3d2b1367fff27e8f7bdbad1856459bf1f0fc9bd66527dce569e1523"
 dependencies = [
  "bindgen",
  "boringssl-src",
@@ -4627,7 +4614,6 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "grpcio",
- "grpcio-health",
  "hex 0.4.2",
  "http",
  "hyper",
