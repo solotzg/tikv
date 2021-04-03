@@ -415,11 +415,8 @@ fn find_mvcc_infos_by_key<S: Snapshot>(
         let opt = reader.seek_write(key, ts)?;
         match opt {
             Some((commit_ts, write)) => {
-                writes.push((commit_ts, write));
-                if commit_ts.is_zero() {
-                    break;
-                }
                 ts = commit_ts.prev();
+                writes.push((commit_ts, write));
             }
             None => break,
         };

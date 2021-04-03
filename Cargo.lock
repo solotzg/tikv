@@ -2709,12 +2709,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "paste"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5d65c4d95931acda4498f675e332fcbdc9a06705cd07086c510e9b6009cd1c1"
-
-[[package]]
 name = "paste-impl"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4637,7 +4631,6 @@ dependencies = [
  "openssl",
  "panic_hook",
  "parking_lot 0.11.0",
- "paste 1.0.4",
  "pd_client",
  "pin-project 0.4.8",
  "pnet_datalink",
@@ -4694,7 +4687,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f28c80e4338857639f443169a601fafe49866aed8d7a8d565c2f5bfb1a021adf"
 dependencies = [
  "libc",
- "paste 0.1.18",
+ "paste",
  "tikv-jemalloc-sys",
 ]
 

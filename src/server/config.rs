@@ -108,8 +108,6 @@ pub struct Config {
     pub background_thread_count: usize,
     // If handle time is larger than the threshold, it will print slow log in end point.
     pub end_point_slow_log_threshold: ReadableDuration,
-    /// Max connections per address for forwarding request.
-    pub forward_max_connections_per_address: usize,
 
     // Test only.
     #[doc(hidden)]
@@ -187,7 +185,6 @@ impl Default for Config {
             raft_client_backoff_step: ReadableDuration::secs(1),
             background_thread_count,
             end_point_slow_log_threshold: ReadableDuration::secs(1),
-            forward_max_connections_per_address: 2,
         }
     }
 }
@@ -273,7 +270,7 @@ impl Config {
 
         if self.grpc_stream_initial_window_size.0 > i32::MAX as u64 {
             return Err(box_err!(
-                "server.grpc-stream-initial-window-size is too large."
+                "server.grpc_stream_initial_window_size is too large."
             ));
         }
 
@@ -294,12 +291,6 @@ impl Config {
         for (k, v) in &self.labels {
             validate_label_key(k)?;
             validate_label_value(v)?;
-        }
-
-        if self.forward_max_connections_per_address == 0 {
-            return Err(box_err!(
-                "server.forward-max-connections-per-address can't be 0."
-            ));
         }
 
         Ok(())
