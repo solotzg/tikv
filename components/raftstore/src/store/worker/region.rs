@@ -690,7 +690,7 @@ impl<R: CasualRouter<RocksEngine>> Runner<R> {
                     self.ctx.handle_apply(snap);
                 }
             }
-            if self.pending_applies.len() < self.pre_handle_snap_cfg.pool_size {
+            if self.pending_applies.len() <= self.pre_handle_snap_cfg.pool_size {
                 break;
             }
         }
@@ -749,6 +749,10 @@ where
                     recv: receiver,
                     pre_handled_snap: None,
                 });
+
+                if self.pending_applies.len() > self.pre_handle_snap_cfg.pool_size {
+                    self.handle_pending_applies();
+                }
             }
             Task::Destroy {
                 region_id,
