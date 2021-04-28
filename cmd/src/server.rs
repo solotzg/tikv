@@ -74,12 +74,7 @@ use tikv::{
         ttl::TTLChecker,
         Node, RaftKv, Server, CPU_CORES_QUOTA_GAUGE, DEFAULT_CLUSTER_ID, GRPC_THREAD_PREFIX,
     },
-    storage::{
-        self,
-        config::{StorageConfigManger, MAX_RESERVED_SPACE_GB},
-        mvcc::MvccConsistencyCheckObserver,
-        Engine,
-    },
+    storage::{self, config::StorageConfigManger, mvcc::MvccConsistencyCheckObserver, Engine},
 };
 use tikv_util::{
     check_environment_variables,
@@ -435,7 +430,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         file_system::reserve_space_for_recover(
             &self.config.storage.data_dir,
             cmp::min(
-                ReadableSize::gb(MAX_RESERVED_SPACE_GB).0,
+                ReadableSize::gb(1).0,
                 if self.config.storage.reserve_space.0 == 0 {
                     0
                 } else {

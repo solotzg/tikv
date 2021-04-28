@@ -34,6 +34,7 @@ protobuf-codec = [
   "tikv/protobuf-codec",
   "tikv_util/protobuf-codec",
   "txn_types/protobuf-codec",
+  "file_system/protobuf-codec",
 ]
 prost-codec = [
   "concurrency_manager/prost-codec",
@@ -52,6 +53,7 @@ prost-codec = [
   "tikv/prost-codec",
   "tikv_util/prost-codec",
   "txn_types/prost-codec",
+  "file_system/prost-codec",
 ]
 test-engines-rocksdb = [
   "tikv/test-engines-rocksdb",
@@ -65,7 +67,7 @@ name = "cmd"
 
 [dependencies]
 chrono = "0.4"
-crossbeam = "0.7"
+crossbeam = "0.8"
 tempfile = "3.0"
 clap = "2.32"
 concurrency_manager = { path = "../components/concurrency_manager", default-features = false }
@@ -73,7 +75,7 @@ encryption_export = { path = "../components/encryption/export", default-features
 engine_rocks = { path = "../components/engine_rocks", default-features = false }
 engine_traits = { path = "../components/engine_traits", default-features = false }
 error_code = { path = "../components/error_code", default-features = false }
-file_system = { path = "../components/file_system" }
+file_system = { path = "../components/file_system", default-features = false }
 fs2 = "0.4"
 futures = "0.3"
 tokio = { version = "0.2", features = ["rt-threaded", "time"] }

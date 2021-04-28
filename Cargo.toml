@@ -1,6 +1,6 @@
 [package]
 name = "tikv"
-version = "5.0.0"
+version = "5.0.1"
 authors = ["The TiKV Authors"]
 description = "A distributed transactional key-value database powered by Rust and Raft"
 license = "Apache-2.0"
@@ -57,6 +57,7 @@ protobuf-codec = [
   "tikv_util/protobuf-codec",
   "txn_types/protobuf-codec",
   "grpcio-health/protobuf-codec",
+  "file_system/protobuf-codec",
 ]
 prost-codec = [
   "batch-system/prost-codec",
@@ -88,6 +89,7 @@ prost-codec = [
   "tikv_util/prost-codec",
   "txn_types/prost-codec",
   "grpcio-health/prost-codec",
+  "file_system/prost-codec",
 ]
 testexport = ["raftstore/testexport"]
 test-engines-rocksdb = [
@@ -120,7 +122,7 @@ concurrency_manager = { path = "components/concurrency_manager", default-feature
 configuration = { path = "components/configuration" }
 crc32fast = "1.2"
 crc64fast = "0.1"
-crossbeam = "0.7.2"
+crossbeam = "0.8"
 derive_more = "0.99.3"
 encryption_export = { path = "components/encryption/export", default-features = false }
 engine_panic = { path = "components/engine_panic", default-features = false }
@@ -131,7 +133,7 @@ engine_traits_tests = { path = "components/engine_traits_tests", default-feature
 error_code = { path = "components/error_code", default-features = false }
 fail = "0.4"
 failure = "0.1"
-file_system = { path = "components/file_system" }
+file_system = { path = "components/file_system", default-features = false }
 fs2 = "0.4"
 futures = { version = "0.3", features = ["thread-pool", "compat"] }
 futures-executor = "0.3.1"
