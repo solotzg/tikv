@@ -430,7 +430,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         file_system::reserve_space_for_recover(
             &self.config.storage.data_dir,
             cmp::min(
-                ReadableSize::gb(1).0,
+                ReadableSize::gb(2).0,
                 if self.config.storage.reserve_space.0 == 0 {
                     0
                 } else {
