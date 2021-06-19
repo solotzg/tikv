@@ -45,8 +45,6 @@ struct FsStats {
   uint64_t capacity_size;
 
   uint8_t ok;
-
-  FsStats() : used_size(0), avail_size(0), capacity_size(0), ok(0) {}
 };
 
 struct StoreStats {
@@ -56,13 +54,6 @@ struct StoreStats {
   uint64_t engine_keys_written;
   uint64_t engine_bytes_read;
   uint64_t engine_keys_read;
-
-  StoreStats()
-      : fs_stats(),
-        engine_bytes_written(0),
-        engine_keys_written(0),
-        engine_bytes_read(0),
-        engine_keys_read(0) {}
 };
 
 enum class RaftProxyStatus : uint8_t {
@@ -82,29 +73,21 @@ using RawCppPtrType = uint32_t;
 struct RawCppPtr {
   RawVoidPtr ptr;
   RawCppPtrType type;
-
-  RawCppPtr(RawVoidPtr ptr_, RawCppPtrType type_) : ptr(ptr_), type(type_) {}
-  RawCppPtr(const RawCppPtr &) = delete;
-  RawCppPtr(RawCppPtr &&) = delete;
 };
 
 struct CppStrWithView {
   RawCppPtr inner;
   BaseBuffView view;
-
-  CppStrWithView(const CppStrWithView &) = delete;
 };
 
-enum class HttpRequestStatus : uint8_t {
-  Ok = 0,
-  ErrorParam,
-};
+using HttpRequestStatus = uint8_t ;
+static constexpr HttpRequestStatus HttpRequestStatusOk = 0;
+static constexpr HttpRequestStatus HttpRequestStatusErrorParam = 1;
+
 
 struct HttpRequestRes {
   HttpRequestStatus status;
   CppStrWithView res;
-
-  HttpRequestRes(const HttpRequestRes &) = delete;
 };
 
 struct CppStrVecView {
