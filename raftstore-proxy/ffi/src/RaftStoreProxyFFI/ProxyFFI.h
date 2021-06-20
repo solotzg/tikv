@@ -80,10 +80,9 @@ struct CppStrWithView {
   BaseBuffView view;
 };
 
-using HttpRequestStatus = uint8_t ;
+using HttpRequestStatus = uint8_t;
 static constexpr HttpRequestStatus HttpRequestStatusOk = 0;
 static constexpr HttpRequestStatus HttpRequestStatusErrorParam = 1;
-
 
 struct HttpRequestRes {
   HttpRequestStatus status;
