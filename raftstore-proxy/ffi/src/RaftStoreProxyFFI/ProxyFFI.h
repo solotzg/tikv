@@ -83,6 +83,7 @@ struct CppStrWithView {
 using HttpRequestStatus = uint8_t;
 static constexpr HttpRequestStatus HttpRequestStatusOk = 0;
 static constexpr HttpRequestStatus HttpRequestStatusErrorParam = 1;
+static constexpr HttpRequestStatus HttpRequestStatusUnknown = 50;
 
 struct HttpRequestRes {
   HttpRequestStatus status;

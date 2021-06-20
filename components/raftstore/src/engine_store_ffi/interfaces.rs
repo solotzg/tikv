@@ -607,6 +607,7 @@ pub mod root {
         pub type HttpRequestStatus = u8;
         pub const HttpRequestStatusOk: root::DB::HttpRequestStatus = 0;
         pub const HttpRequestStatusErrorParam: root::DB::HttpRequestStatus = 1;
+        pub const HttpRequestStatusUnknown: root::DB::HttpRequestStatus = 50;
         #[repr(C)]
         #[derive(Debug)]
         pub struct HttpRequestRes {
@@ -827,7 +828,7 @@ pub mod root {
                 ),
             >,
         }
-        pub const RAFT_STORE_PROXY_VERSION: u32 = 501001;
+        pub const RAFT_STORE_PROXY_VERSION: u32 = 501002;
         pub const RAFT_STORE_PROXY_MAGIC_NUMBER: u32 = 324508639;
     }
 }
