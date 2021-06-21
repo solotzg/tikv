@@ -699,7 +699,7 @@ where
         }
 
         let res = get_engine_store_server_helper().handle_http_request(req.uri().path());
-        if HttpRequestStatus::from(res.status) != HttpRequestStatus::Ok {
+        if res.status != HttpRequestStatus::Ok {
             return err_resp(
                 StatusCode::BAD_REQUEST,
                 format!("error uri path: {}", req.uri().path()),

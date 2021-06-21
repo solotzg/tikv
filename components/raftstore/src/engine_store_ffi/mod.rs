@@ -20,7 +20,7 @@ use std::borrow::Borrow;
 
 pub use crate::engine_store_ffi::interfaces::root::DB::{
     BaseBuffView, ColumnFamilyType, CppStrVecView, EngineStoreApplyRes, EngineStoreServerHelper,
-    EngineStoreServerStatus, FileEncryptionRes, HttpRequestRes, RaftCmdHeader, RaftProxyStatus,
+    EngineStoreServerStatus, FileEncryptionRes, HttpRequestRes, HttpRequestStatus, RaftCmdHeader, RaftProxyStatus,
     RaftStoreProxyFFIHelper, RawCppPtr, RawVoidPtr, SSTReaderPtr, StoreStats, WriteCmdType,
     WriteCmdsView,
 };
@@ -31,41 +31,6 @@ use crate::engine_store_ffi::interfaces::root::DB::{
 };
 use crate::store::LockCFFileReader;
 use std::time::Duration;
-
-#[derive(PartialEq)]
-pub enum HttpRequestStatus {
-    Ok,
-    ErrorParam,
-    Unknown,
-}
-
-impl From<crate::engine_store_ffi::interfaces::root::DB::HttpRequestStatus> for HttpRequestStatus {
-    fn from(s: crate::engine_store_ffi::interfaces::root::DB::HttpRequestStatus) -> Self {
-        match s {
-            crate::engine_store_ffi::interfaces::root::DB::HttpRequestStatusOk => Self::Ok,
-            crate::engine_store_ffi::interfaces::root::DB::HttpRequestStatusErrorParam => {
-                Self::ErrorParam
-            }
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl From<HttpRequestStatus> for crate::engine_store_ffi::interfaces::root::DB::HttpRequestStatus {
-    fn from(s: HttpRequestStatus) -> Self {
-        match s {
-            HttpRequestStatus::Ok => {
-                crate::engine_store_ffi::interfaces::root::DB::HttpRequestStatusOk
-            }
-            HttpRequestStatus::ErrorParam => {
-                crate::engine_store_ffi::interfaces::root::DB::HttpRequestStatusErrorParam
-            }
-            HttpRequestStatus::Unknown => {
-                crate::engine_store_ffi::interfaces::root::DB::HttpRequestStatusUnknown
-            }
-        }
-    }
-}
 
 impl From<&[u8]> for BaseBuffView {
     fn from(s: &[u8]) -> Self {
