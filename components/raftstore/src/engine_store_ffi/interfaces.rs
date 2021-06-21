@@ -830,7 +830,7 @@ pub mod root {
                 ),
             >,
         }
-        pub const RAFT_STORE_PROXY_VERSION: u32 = 501003;
+        pub const RAFT_STORE_PROXY_VERSION: u32 = 501000;
         pub const RAFT_STORE_PROXY_MAGIC_NUMBER: u32 = 324508639;
     }
 }
