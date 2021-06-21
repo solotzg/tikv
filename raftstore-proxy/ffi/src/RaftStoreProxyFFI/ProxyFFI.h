@@ -20,9 +20,6 @@ enum class WriteCmdType : uint8_t {
 struct BaseBuffView {
   const char *data;
   const uint64_t len;
-
-  BaseBuffView(const char *data_ = nullptr, const uint64_t len_ = 0)
-      : data(data_), len(len_) {}
 };
 
 struct RaftCmdHeader {
@@ -80,10 +77,10 @@ struct CppStrWithView {
   BaseBuffView view;
 };
 
-using HttpRequestStatus = uint8_t;
-static constexpr HttpRequestStatus HttpRequestStatusOk = 0;
-static constexpr HttpRequestStatus HttpRequestStatusErrorParam = 1;
-static constexpr HttpRequestStatus HttpRequestStatusUnknown = 50;
+enum class HttpRequestStatus : uint8_t {
+  Ok = 0,
+  ErrorParam,
+};
 
 struct HttpRequestRes {
   HttpRequestStatus status;

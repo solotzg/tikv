@@ -604,10 +604,12 @@ pub mod root {
             pub inner: root::DB::RawCppPtr,
             pub view: root::DB::BaseBuffView,
         }
-        pub type HttpRequestStatus = u8;
-        pub const HttpRequestStatusOk: root::DB::HttpRequestStatus = 0;
-        pub const HttpRequestStatusErrorParam: root::DB::HttpRequestStatus = 1;
-        pub const HttpRequestStatusUnknown: root::DB::HttpRequestStatus = 50;
+        #[repr(u8)]
+        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+        pub enum HttpRequestStatus {
+            Ok = 0,
+            ErrorParam = 1,
+        }
         #[repr(C)]
         #[derive(Debug)]
         pub struct HttpRequestRes {
