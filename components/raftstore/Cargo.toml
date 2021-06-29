@@ -109,6 +109,7 @@ engine_test = { path = "../engine_test", default-features = false }
 engine_rocks = { path = "../engine_rocks", default-features = false }
 
 [dev-dependencies]
+encryption_export = { path = "../encryption/export", default-features = false }
 panic_hook = { path = "../panic_hook" }
 test_sst_importer = { path = "../test_sst_importer", default-features = false }
 engine_panic = { path = "../engine_panic", default-features = false }

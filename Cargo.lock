@@ -3256,6 +3256,7 @@ dependencies = [
  "crc32fast",
  "crossbeam 0.8.0",
  "encryption",
+ "encryption_export",
  "engine_panic",
  "engine_rocks",
  "engine_test",
@@ -4567,7 +4568,7 @@ dependencies = [
 
 [[package]]
 name = "tikv"
-version = "5.0.1"
+version = "5.0.2"
 dependencies = [
  "async-stream",
  "async-trait",
