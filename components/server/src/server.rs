@@ -59,8 +59,8 @@ use raftstore::{
         fsm,
         fsm::store::{RaftBatchSystem, RaftRouter, StoreMeta, PENDING_MSG_CAP},
         memory::MEMTRACE_ROOT,
-        AutoSplitController, GlobalReplicationState, LocalReader, SnapManagerBuilder,
-        SplitCheckRunner, SplitConfigManager, StoreMsg,
+        AutoSplitController, CheckLeaderRunner, GlobalReplicationState, LocalReader,
+        SnapManagerBuilder, SplitCheckRunner, SplitConfigManager, StoreMsg,
     },
 };
 use security::SecurityManager;
@@ -90,6 +90,7 @@ use tikv_util::{
     config::{ensure_dir_exist, VersionTrack},
     math::MovingAvgU32,
     sys::{register_memory_usage_high_water, SysQuota},
+    thread_group::GroupProperties,
     time::Monitor,
     worker::{Builder as WorkerBuilder, FutureWorker, LazyWorker, Worker},
 };
@@ -118,9 +119,6 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     SysQuota::log_quota();
     CPU_CORES_QUOTA_GAUGE.set(SysQuota::cpu_cores_quota());
 
-    let high_water = (config.memory_usage_high_water * config.memory_usage_limit.0 as f64) as u64;
-    register_memory_usage_high_water(high_water);
-
     // Do some prepare works before start.
     pre_start();
 
@@ -129,6 +127,12 @@ pub unsafe fn run_tikv(config: TiKvConfig) {
     macro_rules! run_impl {
         ($ER: ty) => {{
             let mut tikv = TiKVServer::<$ER>::init(config);
+
+            // Must be called after `TiKVServer::init`.
+            let memory_limit = tikv.config.memory_usage_limit.0.unwrap().0;
+            let high_water = (tikv.config.memory_usage_high_water * memory_limit as f64) as u64;
+            register_memory_usage_high_water(high_water);
+
             tikv.check_conflict_addr();
             tikv.init_fs();
             tikv.init_yatp();
@@ -250,6 +254,7 @@ struct Servers<ER: RaftEngine> {
 
 impl<ER: RaftEngine> TiKVServer<ER> {
     fn init(mut config: TiKvConfig) -> TiKVServer<ER> {
+        tikv_util::thread_group::set_properties(Some(GroupProperties::default()));
         // It is okay use pd config and security config before `init_config`,
         // because these configs must be provided by command line, and only
         // used during startup process.
@@ -598,12 +603,16 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         };
 
         // The `DebugService` and `DiagnosticsService` will share the same thread pool
+        let props = tikv_util::thread_group::current_properties();
         let debug_thread_pool = Arc::new(
             Builder::new()
                 .threaded_scheduler()
                 .thread_name(thd_name!("debugger"))
                 .core_threads(1)
-                .on_thread_start(tikv_alloc::add_thread_memory_accessor)
+                .on_thread_start(move || {
+                    tikv_alloc::add_thread_memory_accessor();
+                    tikv_util::thread_group::set_properties(props.clone());
+                })
                 .on_thread_stop(tikv_alloc::remove_thread_memory_accessor)
                 .build()
                 .unwrap(),
@@ -662,6 +671,11 @@ impl<ER: RaftEngine> TiKVServer<ER> {
             cop_read_pools.handle()
         };
 
+        let check_leader_runner = CheckLeaderRunner::new(engines.store_meta.clone());
+        let check_leader_scheduler = self
+            .background_worker
+            .start("check-leader", check_leader_runner);
+
         let server_config = Arc::new(VersionTrack::new(self.config.server.clone()));
 
         self.config
@@ -697,6 +711,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
             self.resolver.clone(),
             snap_mgr.clone(),
             gc_worker.clone(),
+            check_leader_scheduler,
             self.env.clone(),
             unified_read_pool,
             debug_thread_pool,
@@ -914,6 +929,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
     }
 
     fn stop(self) {
+        tikv_util::thread_group::mark_shutdown();
         let mut servers = self.servers.unwrap();
         servers
             .server
